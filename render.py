@@ -8,7 +8,7 @@ This script then:
   2. gets word-level timestamps with Whisper (falls back to an even estimate)
   3. generates one image per scene, trying Hugging Face -> Cloudflare -> Colab (configurable order)
   4. picks a mood-matched music track from the Google Drive folder
-  5. draws every frame itself (smooth zoom, cross-fades, word-by-word captions) and encodes with ffmpeg
+  5. draws every frame itself (still images with random soft transitions, word-by-word captions) and encodes with ffmpeg
   6. mixes voice + music (music ducks under the voice), uploads the mp4 and calls n8n back
 """
 import base64
@@ -33,8 +33,9 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 W, H = 1080, 1920
 FPS = 30
 CANVAS_W, CANVAS_H = 1242, 2208          # source canvas is larger than the frame so zoom never upscales
-ZOOM_AMOUNT = 0.07                       # slow zoom: 7% over the scene
-XFADE = 0.16                             # seconds of cross-fade between scenes
+TRANS_DUR = 0.4                          # seconds each transition between scenes lasts
+TRANSITIONS = ['fade', 'push', 'wipe', 'slide']   # picked at random per cut, never the same twice in a row
+WIPE_SOFT = 260                          # softness of the wipe edge in pixels
 WORK = os.environ.get("WORK_DIR", "work")
 OUT = os.environ.get("OUT_DIR", "output")
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -459,44 +460,87 @@ class CaptionTrack:
                 x += widths[k] + self.space
 
 
-def scene_frame(canvas, progress, zoom_in):
-    p = min(1.0, max(0.0, progress))
-    z = 1.0 + ZOOM_AMOUNT * (p if zoom_in else (1 - p))
-    bw, bh = CANVAS_W / z, CANVAS_H / z
-    x0, y0 = (CANVAS_W - bw) / 2, (CANVAS_H - bh) / 2
-    return canvas.resize((W, H), Image.BICUBIC, box=(x0, y0, x0 + bw, y0 + bh))
+def ease(x):
+    x = min(1.0, max(0.0, x))
+    return x * x * (3 - 2 * x)
+
+
+_WIPE_STRIP = None
+
+
+def wipe_strip():
+    global _WIPE_STRIP
+    if _WIPE_STRIP is None:
+        _WIPE_STRIP = Image.linear_gradient('L').rotate(-90).resize((WIPE_SOFT, H), Image.BILINEAR)
+    return _WIPE_STRIP
+
+
+def transition_frame(kind, old, new, p):
+    """One frame of a short, eased transition from image old to image new (p goes 0 to 1)."""
+    e = ease(p)
+    if kind == 'fade':
+        return Image.blend(old, new, e)
+    if kind == 'push':
+        off = int(W * e)
+        f = Image.new('RGB', (W, H))
+        f.paste(old, (-off, 0))
+        f.paste(new, (W - off, 0))
+        return f
+    if kind == 'slide':
+        f = old.copy()
+        f.paste(new, (W - int(W * e), 0))
+        return f
+    edge = int((W + WIPE_SOFT) * e) - WIPE_SOFT
+    mask = Image.new('L', (W, H), 0)
+    if edge > 0:
+        mask.paste(255, (0, 0, min(W, edge), H))
+    if -WIPE_SOFT < edge < W:
+        strip = wipe_strip()
+        sx = edge
+        if sx < 0:
+            strip = strip.crop((-sx, 0, WIPE_SOFT, H))
+            sx = 0
+        if sx + strip.width > W:
+            strip = strip.crop((0, 0, W - sx, H))
+        mask.paste(strip, (sx, 0))
+    return Image.composite(new, old, mask)
 
 
 def render_video(canvases, bounds, captions, total, audio_path, out_path):
     nframes = int(math.ceil(total * FPS))
-    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}",
-           "-r", str(FPS), "-i", "-", "-i", audio_path, "-map", "0:v", "-map", "1:a",
-           "-c:v", "libx264", "-preset", os.environ.get("X264_PRESET", "veryfast"), "-crf", "20",
-           "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", "-shortest", out_path]
+    cmd = ['ffmpeg', '-y', '-loglevel', 'error', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', f'{W}x{H}',
+           '-r', str(FPS), '-i', '-', '-i', audio_path, '-map', '0:v', '-map', '1:a',
+           '-c:v', 'libx264', '-preset', os.environ.get('X264_PRESET', 'veryfast'), '-crf', '20',
+           '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', '-shortest', out_path]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
     n = len(canvases)
-    half = XFADE / 2
+    half = TRANS_DUR / 2
+    # images stay completely still; only the short transition between scenes moves
+    statics = [c.resize((W, H), Image.LANCZOS) for c in canvases]
+    kinds = []
+    prev = None
+    for _ in range(max(0, n - 1)):
+        kind = random.choice([x for x in TRANSITIONS if x != prev])
+        kinds.append(kind)
+        prev = kind
+    log('transitions:', kinds)
     for f in range(nframes):
         t = f / FPS
         k = 0
         while k + 1 < n and t >= bounds[k + 1]:
             k += 1
         start, end = bounds[k], bounds[k + 1]
-        frame = scene_frame(canvases[k], (t - start) / max(0.01, end - start), k % 2 == 0)
-        # cross-fade with the neighbour near a cut
         if k + 1 < n and t > end - half:
-            a = (t - (end - half)) / XFADE
-            nxt = scene_frame(canvases[k + 1], (t - end) / max(0.01, bounds[k + 2] - end) if k + 2 <= n else 0, (k + 1) % 2 == 0)
-            frame = Image.blend(frame, nxt, min(1.0, max(0.0, a)))
+            frame = transition_frame(kinds[k], statics[k], statics[k + 1], (t - (end - half)) / TRANS_DUR)
         elif k > 0 and t < start + half:
-            a = 0.5 + (t - start) / XFADE
-            prv = scene_frame(canvases[k - 1], 1.0, (k - 1) % 2 == 0)
-            frame = Image.blend(prv, frame, min(1.0, max(0.0, a)))
+            frame = transition_frame(kinds[k - 1], statics[k - 1], statics[k], (t - (start - half)) / TRANS_DUR)
+        else:
+            frame = statics[k].copy()
         captions.draw(frame, t)
         proc.stdin.write(frame.tobytes())
     proc.stdin.close()
     if proc.wait() != 0:
-        raise RuntimeError("ffmpeg video encode failed")
+        raise RuntimeError('ffmpeg video encode failed')
 
 
 # ----------------------------------------------------------------------------- upload + callback

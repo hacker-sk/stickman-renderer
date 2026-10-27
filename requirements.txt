@@ -1,0 +1,5 @@
+requests
+pillow
+numpy
+faster-whisper
+huggingface_hub

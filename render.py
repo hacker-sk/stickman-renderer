@@ -33,7 +33,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 W, H = 1080, 1920
 FPS = 30
 CANVAS_W, CANVAS_H = 1242, 2208          # source canvas is larger than the frame so zoom never upscales
-TRANSITIONS = {'fade': 0.5, 'dissolve': 0.8}   # name: seconds. Only gentle cross-dissolves, picked at random per cut, never the same twice in a row
+TRANSITIONS = {'fade': 0.5}   # name: seconds. Only the short cross-dissolve
 WORK = os.environ.get("WORK_DIR", "work")
 OUT = os.environ.get("OUT_DIR", "output")
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -520,7 +520,7 @@ def render_video(canvases, bounds, captions, total, audio_path, out_path):
     kinds = []
     prev = None
     for _ in range(max(0, n - 1)):
-        kind = random.choice([x for x in TRANSITIONS if x != prev])
+        kind = random.choice([x for x in TRANSITIONS if x != prev] or list(TRANSITIONS))
         kinds.append(kind)
         prev = kind
     log('transitions:', kinds)

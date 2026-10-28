@@ -8,7 +8,7 @@ This script then:
   2. gets word-level timestamps with Whisper (falls back to an even estimate)
   3. generates one image per scene, trying Hugging Face -> Cloudflare -> Colab (configurable order)
   4. picks a mood-matched music track from the Google Drive folder
-  5. draws every frame itself (still images with random soft transitions, word-by-word captions) and encodes with ffmpeg
+  5. draws every frame itself (still images with random gentle fades, word-by-word captions) and encodes with ffmpeg
   6. mixes voice + music (music ducks under the voice), uploads the mp4 and calls n8n back
 """
 import base64
@@ -33,9 +33,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 W, H = 1080, 1920
 FPS = 30
 CANVAS_W, CANVAS_H = 1242, 2208          # source canvas is larger than the frame so zoom never upscales
-TRANS_DUR = 0.4                          # seconds each transition between scenes lasts
-TRANSITIONS = ['fade', 'push', 'wipe', 'slide']   # picked at random per cut, never the same twice in a row
-WIPE_SOFT = 260                          # softness of the wipe edge in pixels
+TRANSITIONS = {'fade': 0.5, 'dissolve': 0.8, 'dip': 0.5}   # name: seconds. Only gentle fades, picked at random per cut, never the same twice in a row
 WORK = os.environ.get("WORK_DIR", "work")
 OUT = os.environ.get("OUT_DIR", "output")
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -465,45 +463,21 @@ def ease(x):
     return x * x * (3 - 2 * x)
 
 
-_WIPE_STRIP = None
-
-
-def wipe_strip():
-    global _WIPE_STRIP
-    if _WIPE_STRIP is None:
-        _WIPE_STRIP = Image.linear_gradient('L').rotate(-90).resize((WIPE_SOFT, H), Image.BILINEAR)
-    return _WIPE_STRIP
+def smoother(x):
+    x = min(1.0, max(0.0, x))
+    return x * x * x * (x * (x * 6 - 15) + 10)
 
 
 def transition_frame(kind, old, new, p):
-    """One frame of a short, eased transition from image old to image new (p goes 0 to 1)."""
-    e = ease(p)
+    """One frame of a gentle transition from image old to image new (p goes 0 to 1). No movement, only fading."""
     if kind == 'fade':
-        return Image.blend(old, new, e)
-    if kind == 'push':
-        off = int(W * e)
-        f = Image.new('RGB', (W, H))
-        f.paste(old, (-off, 0))
-        f.paste(new, (W - off, 0))
-        return f
-    if kind == 'slide':
-        f = old.copy()
-        f.paste(new, (W - int(W * e), 0))
-        return f
-    edge = int((W + WIPE_SOFT) * e) - WIPE_SOFT
-    mask = Image.new('L', (W, H), 0)
-    if edge > 0:
-        mask.paste(255, (0, 0, min(W, edge), H))
-    if -WIPE_SOFT < edge < W:
-        strip = wipe_strip()
-        sx = edge
-        if sx < 0:
-            strip = strip.crop((-sx, 0, WIPE_SOFT, H))
-            sx = 0
-        if sx + strip.width > W:
-            strip = strip.crop((0, 0, W - sx, H))
-        mask.paste(strip, (sx, 0))
-    return Image.composite(new, old, mask)
+        return Image.blend(old, new, ease(p))
+    if kind == 'dissolve':
+        return Image.blend(old, new, smoother(p))
+    dark = Image.new('RGB', (W, H), (12, 12, 14))
+    if p < 0.5:
+        return Image.blend(old, dark, ease(p * 2))
+    return Image.blend(dark, new, ease((p - 0.5) * 2))
 
 
 def render_video(canvases, bounds, captions, total, audio_path, out_path):
@@ -514,8 +488,7 @@ def render_video(canvases, bounds, captions, total, audio_path, out_path):
            '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', '-shortest', out_path]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
     n = len(canvases)
-    half = TRANS_DUR / 2
-    # images stay completely still; only the short transition between scenes moves
+    # images stay completely still; only a short fade between scenes
     statics = [c.resize((W, H), Image.LANCZOS) for c in canvases]
     kinds = []
     prev = None
@@ -530,11 +503,16 @@ def render_video(canvases, bounds, captions, total, audio_path, out_path):
         while k + 1 < n and t >= bounds[k + 1]:
             k += 1
         start, end = bounds[k], bounds[k + 1]
-        if k + 1 < n and t > end - half:
-            frame = transition_frame(kinds[k], statics[k], statics[k + 1], (t - (end - half)) / TRANS_DUR)
-        elif k > 0 and t < start + half:
-            frame = transition_frame(kinds[k - 1], statics[k - 1], statics[k], (t - (start - half)) / TRANS_DUR)
-        else:
+        frame = None
+        if k + 1 < n:
+            d = TRANSITIONS[kinds[k]]
+            if t > end - d / 2:
+                frame = transition_frame(kinds[k], statics[k], statics[k + 1], (t - (end - d / 2)) / d)
+        if frame is None and k > 0:
+            d = TRANSITIONS[kinds[k - 1]]
+            if t < start + d / 2:
+                frame = transition_frame(kinds[k - 1], statics[k - 1], statics[k], (t - (start - d / 2)) / d)
+        if frame is None:
             frame = statics[k].copy()
         captions.draw(frame, t)
         proc.stdin.write(frame.tobytes())

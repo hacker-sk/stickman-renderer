@@ -8,7 +8,7 @@ This script then:
   2. gets word-level timestamps with Whisper (falls back to an even estimate)
   3. generates one image per scene, trying Hugging Face -> Cloudflare -> Colab (configurable order)
   4. picks a mood-matched music track from the Google Drive folder
-  5. draws every frame itself (still images with random gentle fades, word-by-word captions) and encodes with ffmpeg
+  5. draws every frame itself (still images with gentle cross-dissolves, word-by-word captions) and encodes with ffmpeg
   6. mixes voice + music (music ducks under the voice), uploads the mp4 and calls n8n back
 """
 import base64
@@ -33,7 +33,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 W, H = 1080, 1920
 FPS = 30
 CANVAS_W, CANVAS_H = 1242, 2208          # source canvas is larger than the frame so zoom never upscales
-TRANSITIONS = {'fade': 0.5, 'dissolve': 0.8, 'dip': 0.5}   # name: seconds. Only gentle fades, picked at random per cut, never the same twice in a row
+TRANSITIONS = {'fade': 0.5, 'dissolve': 0.8}   # name: seconds. Only gentle cross-dissolves, picked at random per cut, never the same twice in a row
 WORK = os.environ.get("WORK_DIR", "work")
 OUT = os.environ.get("OUT_DIR", "output")
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -469,15 +469,10 @@ def smoother(x):
 
 
 def transition_frame(kind, old, new, p):
-    """One frame of a gentle transition from image old to image new (p goes 0 to 1). No movement, only fading."""
+    """One frame of a gentle cross-dissolve from image old to image new (p goes 0 to 1). No movement, no dark dip."""
     if kind == 'fade':
         return Image.blend(old, new, ease(p))
-    if kind == 'dissolve':
-        return Image.blend(old, new, smoother(p))
-    dark = Image.new('RGB', (W, H), (12, 12, 14))
-    if p < 0.5:
-        return Image.blend(old, dark, ease(p * 2))
-    return Image.blend(dark, new, ease((p - 0.5) * 2))
+    return Image.blend(old, new, smoother(p))
 
 
 def render_video(canvases, bounds, captions, total, audio_path, out_path):
@@ -488,7 +483,7 @@ def render_video(canvases, bounds, captions, total, audio_path, out_path):
            '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', '-shortest', out_path]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
     n = len(canvases)
-    # images stay completely still; only a short fade between scenes
+    # images stay completely still; only a short cross-fade between scenes
     statics = [c.resize((W, H), Image.LANCZOS) for c in canvases]
     kinds = []
     prev = None

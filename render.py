@@ -4,7 +4,7 @@ Stickman Shorts renderer (runs inside GitHub Actions).
 
 n8n sends one JSON payload (the script, scenes, image prompts, art style, mood and a callback URL).
 This script then:
-  1. makes the Kore voiceover with Gemini TTS
+  1. makes the Callirrhoe voiceover with Gemini TTS
   2. gets word-level timestamps with Whisper (falls back to an even estimate)
   3. generates one image per scene, trying Hugging Face -> Cloudflare -> Colab (configurable order)
   4. picks a mood-matched music track from the Google Drive folder
@@ -99,7 +99,7 @@ def make_voice(text, path):
         "contents": [{"parts": [{"text": text}]}],
         "generationConfig": {
             "responseModalities": ["AUDIO"],
-            "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": "Kore"}}},
+            "speechConfig": {"voiceConfig": {"prebuiltVoiceConfig": {"voiceName": "Callirrhoe"}}},
         },
     }
 

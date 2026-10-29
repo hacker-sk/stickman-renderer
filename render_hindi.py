@@ -33,7 +33,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 W, H = 1080, 1920
 FPS = 30
 CANVAS_W, CANVAS_H = 1242, 2208          # source canvas is larger than the frame so zoom never upscales
-TRANSITIONS = {'fade': 0.5}   # name: seconds. Only the short cross-dissolve
+TRANSITIONS = {}   # name: seconds. Only the short cross-dissolve
 WORK = os.environ.get("WORK_DIR", "work")
 OUT = os.environ.get("OUT_DIR", "output")
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -96,27 +96,70 @@ def retry(fn, tries=4, delay=4, what="call"):
 EL_ALIGN = {}
 
 
+VOICE_NAME = 'Hindi Reel Creator Male'
+VOICE_DESC = 'A vibrant young adult male in his mid-20s speaking fluent, modern Hindi. He has a highly energetic reel-creator persona, a crisp and sharp vocal texture, and a naturally punchy, fast-talking delivery style that sounds charismatic and engaging.'
+VOICE_SAMPLE = 'दोस्तों, क्या आप जानते हैं कि इस दुनिया में ऐसे कई रहस्य हैं जिनका जवाब आज तक किसी के पास नहीं है? आज की कहानी सुनकर आप हैरान रह जाएंगे, तो बने रहिए आखिर तक!'
+
+
+def el_post(url, headers, body):
+    r = requests.post(url, headers=headers, data=json.dumps(body), timeout=180)
+    if r.status_code != 200:
+        raise RuntimeError('ElevenLabs HTTP ' + str(r.status_code) + ': ' + r.text[:200])
+    return r.json()
+
+
+def ensure_designed_voice(key):
+    h = {'xi-api-key': key, 'Content-Type': 'application/json'}
+    r = requests.get('https://api.elevenlabs.io/v1/voices', headers=h, timeout=60)
+    if r.status_code == 200:
+        for v in r.json().get('voices', []):
+            if v.get('name') == VOICE_NAME:
+                log('using saved designed voice:', v.get('voice_id'))
+                return v.get('voice_id')
+    log('designing the Hindi reel voice (first run only)')
+    try:
+        d = el_post('https://api.elevenlabs.io/v1/text-to-voice/design', h,
+                    {'voice_description': VOICE_DESC, 'text': VOICE_SAMPLE, 'model_id': 'eleven_multilingual_ttv_v2'})
+    except Exception as e:  # noqa
+        log('design endpoint failed, trying the older one:', str(e)[:150])
+        d = el_post('https://api.elevenlabs.io/v1/text-to-voice/create-previews', h,
+                    {'voice_description': VOICE_DESC, 'text': VOICE_SAMPLE})
+    gen = d['previews'][0]['generated_voice_id']
+    body = {'voice_name': VOICE_NAME, 'voice_description': VOICE_DESC, 'generated_voice_id': gen}
+    try:
+        v = el_post('https://api.elevenlabs.io/v1/text-to-voice', h, body)
+    except Exception as e:  # noqa
+        log('create endpoint failed, trying the older one:', str(e)[:150])
+        v = el_post('https://api.elevenlabs.io/v1/text-to-voice/create-voice-from-preview', h, body)
+    log('designed voice saved:', v.get('voice_id'))
+    return v['voice_id']
+
+
 def make_voice_elevenlabs(text, path):
     if FAKE:
         subprocess.run(['ffmpeg', '-y', '-loglevel', 'error', '-f', 'lavfi', '-i',
                         'sine=frequency=180:duration=41,tremolo=f=4:d=0.9', '-ar', '24000', '-ac', '1', path], check=True)
         return
-    payload = json.loads(os.environ['PAYLOAD'])
     key = os.environ['ELEVENLABS_API_KEY']
-    voice_id = payload.get('voice_id') or '21m00Tcm4TlvDq8ikWAM'
-    model = payload.get('tts_model') or 'eleven_multilingual_v2'
+    voice_id = ensure_designed_voice(key)
     url = 'https://api.elevenlabs.io/v1/text-to-speech/' + voice_id + '/with-timestamps?output_format=mp3_44100_128'
-    body = {'text': text, 'model_id': model,
-            'voice_settings': {'stability': 0.5, 'similarity_boost': 0.75, 'style': 0.2, 'use_speaker_boost': True}}
-
-    def call():
-        r = requests.post(url, headers={'xi-api-key': key, 'Content-Type': 'application/json'},
-                          data=json.dumps(body), timeout=180)
-        if r.status_code != 200:
-            raise RuntimeError('ElevenLabs HTTP ' + str(r.status_code) + ': ' + r.text[:200])
-        return r.json()
-
-    data = retry(call, tries=4, delay=5, what='ElevenLabs TTS')
+    body = {'text': text, 'model_id': 'eleven_multilingual_v2',
+            'voice_settings': {'stability': 0.35, 'similarity_boost': 0.8, 'style': 0.5, 'use_speaker_boost': True, 'speed': 1.1}}
+    h = {'xi-api-key': key, 'Content-Type': 'application/json'}
+    data = None
+    last = ''
+    for i in range(3):
+        r = requests.post(url, headers=h, data=json.dumps(body), timeout=180)
+        if r.status_code == 200:
+            data = r.json()
+            break
+        last = 'ElevenLabs HTTP ' + str(r.status_code) + ': ' + r.text[:200]
+        log(last)
+        if r.status_code in (401, 402, 403, 404, 422):
+            break
+        time.sleep(4 * (i + 1))
+    if data is None:
+        raise RuntimeError(last)
     mp3 = path + '.mp3'
     with open(mp3, 'wb') as fh:
         fh.write(base64.b64decode(data['audio_base64']))
@@ -127,7 +170,7 @@ def make_voice_elevenlabs(text, path):
 def make_voice_fish(text, path):
     payload = json.loads(os.environ['PAYLOAD'])
     key = os.environ['FISH_API_KEY']
-    body = {'text': text, 'format': 'mp3', 'mp3_bitrate': 128, 'latency': 'normal'}
+    body = {'text': text, 'format': 'mp3', 'mp3_bitrate': 128, 'latency': 'normal', 'prosody': {'speed': 1.1, 'volume': 0}}
     ref = payload.get('fish_voice_id') or ''
     if ref:
         body['reference_id'] = ref
@@ -233,31 +276,68 @@ def el_words(script_words):
         return None
 
 
-def whisper_span(audio_path):
+def whisper_heard(audio_path):
     from faster_whisper import WhisperModel
     model = WhisperModel(os.environ.get('WHISPER_MODEL', 'small'), device='cpu', compute_type='int8')
-    segs, _ = model.transcribe(audio_path, word_timestamps=True, language='hi', vad_filter=False)
-    starts = []
-    ends = []
+    segs, _ = model.transcribe(audio_path, word_timestamps=True, language='hi', vad_filter=False,
+                               condition_on_previous_text=False)
+    out = []
     for s in segs:
         for w in (s.words or []):
-            starts.append(float(w.start))
-            ends.append(float(w.end))
-    if len(starts) < 3:
-        raise RuntimeError('Whisper heard too few words')
-    return starts[0], ends[-1]
-
-
-def spread_words(script_words, t0, t1):
-    weights = [max(2, len(w)) + 2 for w in script_words]
-    total = float(sum(weights))
-    t = t0
-    out = []
-    for w, wt in zip(script_words, weights):
-        d = (t1 - t0) * wt / total
-        out.append((w, t, t + d * 0.92))
-        t += d
+            t = w.word.strip()
+            if t:
+                out.append((t, float(w.start), float(w.end)))
     return out
+
+
+def map_by_chars(script_words, heard):
+    """Place every script word on the real speech timeline using what Whisper heard (pauses and pace included)."""
+    if len(heard) < 3:
+        raise RuntimeError('Whisper heard too few words')
+    pos = [0]
+    for h in heard:
+        pos.append(pos[-1] + len(h[0]))
+    lw = float(pos[-1])
+    sw = [len(w) for w in script_words]
+    ls = float(sum(sw))
+
+    def time_at(x, is_start):
+        x = min(max(x, 0.0), lw)
+        for i in range(len(heard)):
+            inside = (x < pos[i + 1]) if is_start else (x <= pos[i + 1])
+            if inside or i == len(heard) - 1:
+                a = pos[i]
+                b = pos[i + 1]
+                frac = 0.0 if b == a else min(1.0, max(0.0, (x - a) / (b - a)))
+                return heard[i][1] + frac * (heard[i][2] - heard[i][1])
+        return heard[-1][2]
+
+    out = []
+    c = 0.0
+    for w, n in zip(script_words, sw):
+        s = time_at(c / ls * lw, True)
+        e = time_at((c + n) / ls * lw, False)
+        c += n
+        out.append((w, s, max(e, s + 0.12)))
+    return out
+
+
+def find_silences(audio_path):
+    """Middle points of the real pauses in the voice, used to cut images at natural breaks."""
+    try:
+        r = subprocess.run(['ffmpeg', '-i', audio_path, '-af', 'silencedetect=noise=-32dB:d=0.1', '-f', 'null', '-'],
+                           capture_output=True, text=True)
+        starts = []
+        mids = []
+        for line in r.stderr.splitlines():
+            if 'silence_start:' in line:
+                starts.append(float(line.split('silence_start:')[1].strip().split()[0]))
+            elif 'silence_end:' in line and starts:
+                e = float(line.split('silence_end:')[1].strip().split()[0])
+                mids.append((starts.pop() + e) / 2.0)
+        return mids
+    except Exception:  # noqa
+        return []
 
 
 def align_words(script_words, duration, audio_path):
@@ -266,9 +346,9 @@ def align_words(script_words, duration, audio_path):
         log('ElevenLabs word timing ok (' + str(len(got)) + ' words)')
         return got
     try:
-        t0, t1 = whisper_span(audio_path)
-        log('Whisper speech span ' + str(round(t0, 2)) + 's to ' + str(round(t1, 2)) + 's')
-        return spread_words(script_words, max(0.0, t0 - 0.05), min(duration, t1 + 0.1))
+        heard = whisper_heard(audio_path)
+        log('Whisper heard ' + str(len(heard)) + ' words, mapping the script onto them')
+        return map_by_chars(script_words, heard)
     except Exception as e:  # noqa
         log('Using estimated word timing:', str(e)[:150])
         return estimate_words(script_words, duration)
@@ -460,25 +540,21 @@ def make_images(scenes, style_look, style_name, order):
 # ----------------------------------------------------------------------------- music
 def pick_music(mood):
     try:
-        url = f"https://drive.google.com/embeddedfolderview?id={MUSIC_FOLDER_ID}"
-        html = requests.get(url, timeout=30).text
-        files = re.findall(r'/file/d/([A-Za-z0-9_-]+)/view[\s\S]*?flip-entry-title">([^<]+)<', html)
+        folder = os.path.join(HERE, 'music_hindi')
+        files = []
+        if os.path.isdir(folder):
+            for n in sorted(os.listdir(folder)):
+                if n.lower().endswith(('.mp3', '.wav', '.m4a', '.ogg')):
+                    files.append(n)
         if not files:
-            raise RuntimeError("no tracks listed")
-        pool = [f for f in files if f[1].lower().startswith(mood + "-")] or files
-        fid, name = random.choice(pool)
-        dl = f"https://drive.usercontent.google.com/download?id={fid}&export=download&confirm=t"
-        r = requests.get(dl, timeout=90)
-        if r.status_code != 200 or len(r.content) < 100_000:
-            raise RuntimeError("download failed")
-        p = os.path.join(WORK, "music.mp3")
-        with open(p, "wb") as fh:
-            fh.write(r.content)
-        log("music:", name)
-        return p, name
+            raise RuntimeError('no music files in the music_hindi folder')
+        pool = [n for n in files if n.lower().startswith(mood + '-')] or files
+        name = random.choice(pool)
+        log('music:', name)
+        return os.path.join(folder, name), name
     except Exception as e:  # noqa
-        log("No music this time:", str(e)[:150])
-        return None, ""
+        log('No music this time:', str(e)[:150])
+        return None, ''
 
 
 def mix_audio(voice, music, total, out):
@@ -577,38 +653,20 @@ def transition_frame(kind, old, new, p):
 
 def render_video(canvases, bounds, captions, total, audio_path, out_path):
     nframes = int(math.ceil(total * FPS))
-    cmd = ['ffmpeg', '-y', '-loglevel', 'error', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', f'{W}x{H}',
+    cmd = ['ffmpeg', '-y', '-loglevel', 'error', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', str(W) + 'x' + str(H),
            '-r', str(FPS), '-i', '-', '-i', audio_path, '-map', '0:v', '-map', '1:a',
            '-c:v', 'libx264', '-preset', os.environ.get('X264_PRESET', 'veryfast'), '-crf', '20',
            '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', '-shortest', out_path]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
     n = len(canvases)
-    # images stay completely still; only a short cross-fade between scenes
     statics = [c.resize((W, H), Image.LANCZOS) for c in canvases]
-    kinds = []
-    prev = None
-    for _ in range(max(0, n - 1)):
-        kind = random.choice([x for x in TRANSITIONS if x != prev] or list(TRANSITIONS))
-        kinds.append(kind)
-        prev = kind
-    log('transitions:', kinds)
+    log('hard cuts between scenes, no transitions')
     for f in range(nframes):
         t = f / FPS
         k = 0
         while k + 1 < n and t >= bounds[k + 1]:
             k += 1
-        start, end = bounds[k], bounds[k + 1]
-        frame = None
-        if k + 1 < n:
-            d = TRANSITIONS[kinds[k]]
-            if t > end - d / 2:
-                frame = transition_frame(kinds[k], statics[k], statics[k + 1], (t - (end - d / 2)) / d)
-        if frame is None and k > 0:
-            d = TRANSITIONS[kinds[k - 1]]
-            if t < start + d / 2:
-                frame = transition_frame(kinds[k - 1], statics[k - 1], statics[k], (t - (start - d / 2)) / d)
-        if frame is None:
-            frame = statics[k].copy()
+        frame = statics[k].copy()
         captions.draw(frame, t)
         proc.stdin.write(frame.tobytes())
     proc.stdin.close()
@@ -680,12 +738,20 @@ def main():
 
         words = align_words(script_words, dur, voice)
 
-        # scene boundaries from the first word of each scene
-        bounds = [0.0]
+        # scene boundaries from the first word of each scene, snapped to the nearest real pause
+        first_words = []
         wi = 0
         for s in scenes[:-1]:
-            wi += len(s["narration"].split())
-            bounds.append(max(bounds[-1] + 0.8, words[min(wi, len(words) - 1)][1] - 0.05))
+            wi += len(s['narration'].split())
+            first_words.append(wi)
+        sil = find_silences(voice)
+        bounds = [0.0]
+        for wi in first_words:
+            b = words[min(wi, len(words) - 1)][1] - 0.04
+            cand = [m for m in sil if abs(m - b) <= 0.35]
+            if cand:
+                b = min(cand, key=lambda m: abs(m - b))
+            bounds.append(max(bounds[-1] + 0.8, b))
         total = dur + 0.9
         bounds.append(total)
 

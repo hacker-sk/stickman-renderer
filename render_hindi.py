@@ -403,6 +403,7 @@ _cf_turn = [0]
 
 
 def img_cloudflare(prompt, **_):
+    cf_rate_limited = False
     accts = cf_accounts()
     if not accts:
         raise RuntimeError('Cloudflare keys not set')
@@ -418,10 +419,18 @@ def img_cloudflare(prompt, **_):
         r = requests.post(url, headers={'Authorization': f'Bearer {tok}'},
                           json={'prompt': prompt[:2000], 'steps': 4}, timeout=120)
         if r.status_code in (401, 403, 429):
-            with _lock:
-                if label not in _cf_dead:
-                    _cf_dead.add(label)
-                    log(f'cloudflare {label} is unavailable (HTTP {r.status_code}), switching to the next account')
+            body = r.text[:300]
+            low = body.lower()
+            daily = (r.status_code != 429) or ('daily' in low) or ('4006' in low) or ('neurons' in low)
+            log(f'cloudflare {label} HTTP {r.status_code}: ' + body[:200])
+            if daily:
+                with _lock:
+                    if label not in _cf_dead:
+                        _cf_dead.add(label)
+                        log(f'cloudflare {label} is used up or blocked, switching to the next account')
+            else:
+                cf_rate_limited = True
+                time.sleep(3)
             continue
         if r.status_code != 200:
             raise RuntimeError(f'Cloudflare HTTP {r.status_code}: {r.text[:200]}')
@@ -431,7 +440,11 @@ def img_cloudflare(prompt, **_):
             raise RuntimeError('Cloudflare returned no image: ' + str(data)[:200])
         log(f'cloudflare {label} made an image')
         return Image.open(io.BytesIO(base64.b64decode(b64)))
-    raise RuntimeError('Cloudflare HTTP 429: every account is out of its daily allowance')
+    with _lock:
+        alive = [x for x in accts if x[0] not in _cf_dead]
+    if not alive:
+        raise RuntimeError('Cloudflare HTTP 429: every account is out of its daily allowance')
+    raise RuntimeError('Cloudflare was busy for a moment, will retry')
 
 
 def get_colab_url():

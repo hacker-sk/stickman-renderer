@@ -131,16 +131,29 @@ def make_voice_fish(text, path):
     ref = payload.get('fish_voice_id') or ''
     if ref:
         body['reference_id'] = ref
+    models = ['', payload.get('fish_model') or 's2.1-pro-free']
 
-    def call():
-        r = requests.post('https://api.fish.audio/v1/tts',
-                          headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json', 'model': payload.get('fish_model') or 's2.1-pro-free'},
-                          data=json.dumps(body), timeout=180)
+    def call_with(model):
+        headers = {'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'}
+        if model:
+            headers['model'] = model
+        r = requests.post('https://api.fish.audio/v1/tts', headers=headers, data=json.dumps(body), timeout=180)
         if r.status_code != 200:
             raise RuntimeError('Fish Audio HTTP ' + str(r.status_code) + ': ' + r.text[:200])
         return r.content
 
-    audio = retry(call, tries=3, delay=5, what='Fish Audio TTS')
+    audio = None
+    last = None
+    for model in models:
+        try:
+            audio = retry(lambda: call_with(model), tries=2, delay=4, what='Fish Audio TTS (' + (model or 'default model') + ')')
+            log('Fish Audio voice made with model:', model or 'default')
+            break
+        except Exception as e:  # noqa
+            last = e
+            log('Fish Audio model failed:', model or 'default', str(e)[:150])
+    if audio is None:
+        raise last
     mp3 = path + '.mp3'
     with open(mp3, 'wb') as fh:
         fh.write(audio)

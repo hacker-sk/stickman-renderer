@@ -96,7 +96,7 @@ def retry(fn, tries=4, delay=4, what="call"):
 EL_ALIGN = {}
 
 
-def make_voice(text, path):
+def make_voice_elevenlabs(text, path):
     if FAKE:
         subprocess.run(['ffmpeg', '-y', '-loglevel', 'error', '-f', 'lavfi', '-i',
                         'sine=frequency=180:duration=41,tremolo=f=4:d=0.9', '-ar', '24000', '-ac', '1', path], check=True)
@@ -122,6 +122,40 @@ def make_voice(text, path):
         fh.write(base64.b64decode(data['audio_base64']))
     subprocess.run(['ffmpeg', '-y', '-loglevel', 'error', '-i', mp3, '-ar', '24000', '-ac', '1', path], check=True)
     EL_ALIGN.update(data.get('alignment') or data.get('normalized_alignment') or {})
+
+
+def make_voice_fish(text, path):
+    payload = json.loads(os.environ['PAYLOAD'])
+    key = os.environ['FISH_API_KEY']
+    body = {'text': text, 'format': 'mp3', 'mp3_bitrate': 128, 'latency': 'normal'}
+    ref = payload.get('fish_voice_id') or ''
+    if ref:
+        body['reference_id'] = ref
+
+    def call():
+        r = requests.post('https://api.fish.audio/v1/tts',
+                          headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json', 'model': 's1'},
+                          data=json.dumps(body), timeout=180)
+        if r.status_code != 200:
+            raise RuntimeError('Fish Audio HTTP ' + str(r.status_code) + ': ' + r.text[:200])
+        return r.content
+
+    audio = retry(call, tries=3, delay=5, what='Fish Audio TTS')
+    mp3 = path + '.mp3'
+    with open(mp3, 'wb') as fh:
+        fh.write(audio)
+    subprocess.run(['ffmpeg', '-y', '-loglevel', 'error', '-i', mp3, '-ar', '24000', '-ac', '1', path], check=True)
+    EL_ALIGN.clear()
+
+
+def make_voice(text, path):
+    try:
+        make_voice_elevenlabs(text, path)
+        log('voice made by ElevenLabs')
+    except Exception as e:  # noqa
+        log('ElevenLabs failed, switching to Fish Audio:', str(e)[:200])
+        make_voice_fish(text, path)
+        log('voice made by Fish Audio')
 
 
 def audio_duration(path):
@@ -186,13 +220,45 @@ def el_words(script_words):
         return None
 
 
+def whisper_span(audio_path):
+    from faster_whisper import WhisperModel
+    model = WhisperModel(os.environ.get('WHISPER_MODEL', 'small'), device='cpu', compute_type='int8')
+    segs, _ = model.transcribe(audio_path, word_timestamps=True, language='hi', vad_filter=False)
+    starts = []
+    ends = []
+    for s in segs:
+        for w in (s.words or []):
+            starts.append(float(w.start))
+            ends.append(float(w.end))
+    if len(starts) < 3:
+        raise RuntimeError('Whisper heard too few words')
+    return starts[0], ends[-1]
+
+
+def spread_words(script_words, t0, t1):
+    weights = [max(2, len(w)) + 2 for w in script_words]
+    total = float(sum(weights))
+    t = t0
+    out = []
+    for w, wt in zip(script_words, weights):
+        d = (t1 - t0) * wt / total
+        out.append((w, t, t + d * 0.92))
+        t += d
+    return out
+
+
 def align_words(script_words, duration, audio_path):
     got = el_words(script_words)
     if got:
         log('ElevenLabs word timing ok (' + str(len(got)) + ' words)')
         return got
-    log('Using estimated word timing')
-    return estimate_words(script_words, duration)
+    try:
+        t0, t1 = whisper_span(audio_path)
+        log('Whisper speech span ' + str(round(t0, 2)) + 's to ' + str(round(t1, 2)) + 's')
+        return spread_words(script_words, max(0.0, t0 - 0.05), min(duration, t1 + 0.1))
+    except Exception as e:  # noqa
+        log('Using estimated word timing:', str(e)[:150])
+        return estimate_words(script_words, duration)
 
 
 # ----------------------------------------------------------------------------- images

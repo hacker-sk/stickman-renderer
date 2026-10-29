@@ -25,7 +25,7 @@ jobs:
         run: sudo apt-get update -y && sudo apt-get install -y ffmpeg fonts-noto-core libraqm0 libfribidi0
 
       - name: Install Python packages
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.txt gradio_client
 
       - name: Cache Whisper model
         uses: actions/cache@v4
@@ -40,6 +40,17 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           FISH_API_KEY: ${{ secrets.FISH_API_KEY }}
+          HF_TOKEN_2: ${{ secrets.HF_TOKEN_2 }}
+          HF_TOKEN_3: ${{ secrets.HF_TOKEN_3 }}
+          HF_TOKEN_4: ${{ secrets.HF_TOKEN_4 }}
+          HF_TOKEN_5: ${{ secrets.HF_TOKEN_5 }}
+          HF_TOKEN_6: ${{ secrets.HF_TOKEN_6 }}
+          CF_ACCOUNT_ID_4: ${{ secrets.CF_ACCOUNT_ID_4 }}
+          CF_API_TOKEN_4: ${{ secrets.CF_API_TOKEN_4 }}
+          CF_ACCOUNT_ID_5: ${{ secrets.CF_ACCOUNT_ID_5 }}
+          CF_API_TOKEN_5: ${{ secrets.CF_API_TOKEN_5 }}
+          CF_ACCOUNT_ID_6: ${{ secrets.CF_ACCOUNT_ID_6 }}
+          CF_API_TOKEN_6: ${{ secrets.CF_API_TOKEN_6 }}
           CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CF_ACCOUNT_ID_2: ${{ secrets.CF_ACCOUNT_ID_2 }}

@@ -543,21 +543,26 @@ def img_hfspace(prompt, **_):
     if not toks:
         raise RuntimeError('Hugging Face tokens not set')
     space = os.environ.get('HF_SPACE') or 'black-forest-labs/FLUX.1-schnell'
-    with _lock:
-        live = [t for t in toks if t[0] not in _hf_dead]
-        turn = _hf_turn[0]
-        _hf_turn[0] += 1
-    if not live:
-        raise RuntimeError('Hugging Face ZeroGPU quota: every account is used up for today')
-    for k in range(len(live)):
-        label, tok = live[(turn + k) % len(live)]
+    last = ''
+    for rnd in range(3):
         with _lock:
-            lk = _hf_locks.setdefault(label, threading.Lock())
-        with lk:
+            live = [t for t in toks if t[0] not in _hf_dead]
+            turn = _hf_turn[0]
+            _hf_turn[0] += 1
+        if not live:
+            raise RuntimeError('Hugging Face ZeroGPU quota: every account is used up for today')
+        for k in range(len(live)):
+            label, tok = live[(turn + k) % len(live)]
+            with _lock:
+                lk = _hf_locks.setdefault(label, threading.Lock())
+            if not lk.acquire(timeout=240):
+                continue
+            job = None
             try:
                 client = hf_client(label, tok, space)
-                res = client.predict(prompt=prompt[:1500], seed=0, randomize_seed=True, width=720, height=1280,
-                                     num_inference_steps=4, api_name='/infer')
+                job = client.submit(prompt=prompt[:1500], seed=0, randomize_seed=True, width=720, height=1280,
+                                    num_inference_steps=4, api_name='/infer')
+                res = job.result(timeout=200)
                 path = res[0] if isinstance(res, (list, tuple)) else res
                 if isinstance(path, dict):
                     path = path.get('path') or path.get('url')
@@ -568,15 +573,30 @@ def img_hfspace(prompt, **_):
             except Exception as e:  # noqa
                 msg = str(e)
                 low = msg.lower()
-                gone = ('quota' in low) or ('unauthorized' in low) or ('401' in msg) or ('403' in msg) or ('429' in msg)
+                try:
+                    if job is not None:
+                        job.cancel()
+                except Exception:  # noqa
+                    pass
+                gone = ('quota' in low) or ('unauthorized' in low) or ('401' in msg) or ('403' in msg)
                 if gone:
                     with _lock:
                         if label not in _hf_dead:
                             _hf_dead.add(label)
-                            log(label + ' is unavailable (' + msg[:110] + '), switching to the next account')
+                            log(label + ' is used up or blocked (' + msg[:110] + '), switching to the next account')
                     continue
-                raise RuntimeError('Hugging Face Space error: ' + msg[:200])
-    raise RuntimeError('Hugging Face ZeroGPU quota: every account is used up for today')
+                last = msg[:200]
+                log(label + ' queue busy or failed, trying another account: ' + last[:120])
+                with _lock:
+                    _hf_clients.pop(label + '|' + space, None)
+                continue
+            finally:
+                lk.release()
+        wait = 8 * (rnd + 1)
+        log('all Hugging Face queues busy, waiting ' + str(wait) + 's (round ' + str(rnd + 1) + ' of 3)')
+        time.sleep(wait)
+    log('Hugging Face gave no image this time, last problem: ' + last[:150])
+    raise RuntimeError('Hugging Face queue was busy or failed, falling back to the next image source')
 
 
 PROVIDERS = {'hf': img_hf, 'hfspace': img_hfspace, 'cloudflare': img_cloudflare, 'colab': img_colab, 'pollinations': img_pollinations}

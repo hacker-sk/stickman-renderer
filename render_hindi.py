@@ -416,7 +416,7 @@ def img_cloudflare(prompt, **_):
         label, acct, tok = live[(turn + k) % len(live)]
         url = f'https://api.cloudflare.com/client/v4/accounts/{acct}/ai/run/@cf/black-forest-labs/flux-1-schnell'
         r = requests.post(url, headers={'Authorization': f'Bearer {tok}'},
-                          json={'prompt': prompt[:2000], 'steps': 6}, timeout=120)
+                          json={'prompt': prompt[:2000], 'steps': 4}, timeout=120)
         if r.status_code in (401, 403, 429):
             with _lock:
                 if label not in _cf_dead:
@@ -472,7 +472,28 @@ def img_fake(prompt, idx=0, **_):
     return im
 
 
-PROVIDERS = {"hf": img_hf, "cloudflare": img_cloudflare, "colab": img_colab}
+_poll_lock = threading.Lock()
+
+
+def img_pollinations(prompt, **_):
+    """Free fallback that needs no key. One request at a time, retried a few times."""
+    url = ('https://image.pollinations.ai/prompt/' + requests.utils.quote(prompt[:1500]) +
+           '?width=720&height=1280&model=flux&nologo=true&private=true&seed=' + str(random.randint(1, 999999)))
+    last = ''
+    with _poll_lock:
+        for i in range(4):
+            try:
+                r = requests.get(url, timeout=150)
+                if r.status_code == 200 and len(r.content) > 5000:
+                    return Image.open(io.BytesIO(r.content))
+                last = 'Pollinations HTTP ' + str(r.status_code)
+            except Exception as e:  # noqa
+                last = 'Pollinations error ' + str(e)[:100]
+            time.sleep(6 * (i + 1))
+    raise RuntimeError(last)
+
+
+PROVIDERS = {'hf': img_hf, 'cloudflare': img_cloudflare, 'colab': img_colab, 'pollinations': img_pollinations}
 
 
 def generate_image(idx, prompt, compact, order):
@@ -730,6 +751,8 @@ def main():
         log("provider order:", order)
 
         voice = os.path.join(WORK, "voice.wav")
+        if 'pollinations' not in order:
+            order.append('pollinations')
         make_voice(narration, voice)
         dur = audio_duration(voice)
         log(f"voice {dur:.1f}s")

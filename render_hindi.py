@@ -134,7 +134,7 @@ def make_voice_fish(text, path):
 
     def call():
         r = requests.post('https://api.fish.audio/v1/tts',
-                          headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json', 'model': 's1'},
+                          headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json', 'model': payload.get('fish_model') or 's2.1-pro-free'},
                           data=json.dumps(body), timeout=180)
         if r.status_code != 200:
             raise RuntimeError('Fish Audio HTTP ' + str(r.status_code) + ': ' + r.text[:200])

@@ -242,7 +242,7 @@ def img_hf(prompt, **_):
 def cf_accounts():
     """Cloudflare accounts from the secrets: CF_ACCOUNT_ID / CF_API_TOKEN, then the _2 and _3 pairs."""
     accts = []
-    for suffix in ('', '_2', '_3'):
+    for suffix in ('', '_2', '_3', '_4', '_5', '_6'):
         acct = os.environ.get('CF_ACCOUNT_ID' + suffix, '').strip()
         tok = os.environ.get('CF_API_TOKEN' + suffix, '').strip()
         if acct and tok:
@@ -255,6 +255,7 @@ _cf_turn = [0]
 
 
 def img_cloudflare(prompt, **_):
+    cf_rate_limited = False
     accts = cf_accounts()
     if not accts:
         raise RuntimeError('Cloudflare keys not set')
@@ -268,12 +269,20 @@ def img_cloudflare(prompt, **_):
         label, acct, tok = live[(turn + k) % len(live)]
         url = f'https://api.cloudflare.com/client/v4/accounts/{acct}/ai/run/@cf/black-forest-labs/flux-1-schnell'
         r = requests.post(url, headers={'Authorization': f'Bearer {tok}'},
-                          json={'prompt': prompt[:2000], 'steps': 6}, timeout=120)
+                          json={'prompt': prompt[:2000], 'steps': 4}, timeout=120)
         if r.status_code in (401, 403, 429):
-            with _lock:
-                if label not in _cf_dead:
-                    _cf_dead.add(label)
-                    log(f'cloudflare {label} is unavailable (HTTP {r.status_code}), switching to the next account')
+            body = r.text[:300]
+            low = body.lower()
+            daily = (r.status_code != 429) or ('daily' in low) or ('4006' in low) or ('neurons' in low)
+            log(f'cloudflare {label} HTTP {r.status_code}: ' + body[:200])
+            if daily:
+                with _lock:
+                    if label not in _cf_dead:
+                        _cf_dead.add(label)
+                        log(f'cloudflare {label} is used up or blocked, switching to the next account')
+            else:
+                cf_rate_limited = True
+                time.sleep(3)
             continue
         if r.status_code != 200:
             raise RuntimeError(f'Cloudflare HTTP {r.status_code}: {r.text[:200]}')
@@ -283,7 +292,11 @@ def img_cloudflare(prompt, **_):
             raise RuntimeError('Cloudflare returned no image: ' + str(data)[:200])
         log(f'cloudflare {label} made an image')
         return Image.open(io.BytesIO(base64.b64decode(b64)))
-    raise RuntimeError('Cloudflare HTTP 429: every account is out of its daily allowance')
+    with _lock:
+        alive = [x for x in accts if x[0] not in _cf_dead]
+    if not alive:
+        raise RuntimeError('Cloudflare HTTP 429: every account is out of its daily allowance')
+    raise RuntimeError('Cloudflare was busy for a moment, will retry')
 
 
 def get_colab_url():
@@ -324,7 +337,121 @@ def img_fake(prompt, idx=0, **_):
     return im
 
 
-PROVIDERS = {"hf": img_hf, "cloudflare": img_cloudflare, "colab": img_colab}
+_poll_lock = threading.Lock()
+
+
+def img_pollinations(prompt, **_):
+    """Free fallback that needs no key. One request at a time, retried a few times."""
+    url = ('https://image.pollinations.ai/prompt/' + requests.utils.quote(prompt[:1500]) +
+           '?width=720&height=1280&model=flux&nologo=true&private=true&seed=' + str(random.randint(1, 999999)))
+    last = ''
+    with _poll_lock:
+        for i in range(4):
+            try:
+                r = requests.get(url, timeout=150)
+                if r.status_code == 200 and len(r.content) > 5000:
+                    return Image.open(io.BytesIO(r.content))
+                last = 'Pollinations HTTP ' + str(r.status_code)
+            except Exception as e:  # noqa
+                last = 'Pollinations error ' + str(e)[:100]
+            time.sleep(6 * (i + 1))
+    raise RuntimeError(last)
+
+
+# Hugging Face ZeroGPU Spaces through gradio_client. One free ZeroGPU quota per account (HF_TOKEN, HF_TOKEN_2 ... HF_TOKEN_6)
+def hf_tokens():
+    toks = []
+    for suffix in ('', '_2', '_3', '_4', '_5', '_6'):
+        t = os.environ.get('HF_TOKEN' + suffix, '').strip()
+        if t:
+            toks.append(('hf account ' + (suffix[1:] if suffix else '1'), t))
+    return toks
+
+
+_hf_dead = set()
+_hf_turn = [0]
+_hf_clients = {}
+_hf_locks = {}
+
+
+def hf_client(label, tok, space):
+    key = label + '|' + space
+    with _lock:
+        c = _hf_clients.get(key)
+    if c is not None:
+        return c
+    from gradio_client import Client
+    try:
+        c = Client(space, token=tok, verbose=False)
+    except TypeError:
+        c = Client(space, hf_token=tok, verbose=False)
+    with _lock:
+        _hf_clients[key] = c
+    return c
+
+
+def img_hfspace(prompt, **_):
+    toks = hf_tokens()
+    if not toks:
+        raise RuntimeError('Hugging Face tokens not set')
+    space = os.environ.get('HF_SPACE') or 'black-forest-labs/FLUX.1-schnell'
+    last = ''
+    for rnd in range(3):
+        with _lock:
+            live = [t for t in toks if t[0] not in _hf_dead]
+            turn = _hf_turn[0]
+            _hf_turn[0] += 1
+        if not live:
+            raise RuntimeError('Hugging Face ZeroGPU quota: every account is used up for today')
+        for k in range(len(live)):
+            label, tok = live[(turn + k) % len(live)]
+            with _lock:
+                lk = _hf_locks.setdefault(label, threading.Lock())
+            if not lk.acquire(timeout=240):
+                continue
+            job = None
+            try:
+                client = hf_client(label, tok, space)
+                job = client.submit(prompt=prompt[:1500], seed=0, randomize_seed=True, width=720, height=1280,
+                                    num_inference_steps=4, api_name='/infer')
+                res = job.result(timeout=200)
+                path = res[0] if isinstance(res, (list, tuple)) else res
+                if isinstance(path, dict):
+                    path = path.get('path') or path.get('url')
+                im = Image.open(path)
+                im.load()
+                log(label + ' (ZeroGPU) made an image')
+                return im
+            except Exception as e:  # noqa
+                msg = str(e)
+                low = msg.lower()
+                try:
+                    if job is not None:
+                        job.cancel()
+                except Exception:  # noqa
+                    pass
+                gone = ('quota' in low) or ('unauthorized' in low) or ('401' in msg) or ('403' in msg)
+                if gone:
+                    with _lock:
+                        if label not in _hf_dead:
+                            _hf_dead.add(label)
+                            log(label + ' is used up or blocked (' + msg[:110] + '), switching to the next account')
+                    continue
+                last = msg[:200]
+                log(label + ' queue busy or failed, trying another account: ' + last[:120])
+                with _lock:
+                    _hf_clients.pop(label + '|' + space, None)
+                continue
+            finally:
+                lk.release()
+        wait = 8 * (rnd + 1)
+        log('all Hugging Face queues busy, waiting ' + str(wait) + 's (round ' + str(rnd + 1) + ' of 3)')
+        time.sleep(wait)
+    log('Hugging Face gave no image this time, last problem: ' + last[:150])
+    raise RuntimeError('Hugging Face queue was busy or failed, falling back to the next image source')
+
+
+PROVIDERS = {'hf': img_hf, 'hfspace': img_hfspace, 'cloudflare': img_cloudflare, 'colab': img_colab, 'pollinations': img_pollinations}
 
 
 def generate_image(idx, prompt, compact, order):
@@ -351,7 +478,7 @@ def generate_image(idx, prompt, compact, order):
                 hard = any(x in msg for x in ("401", "402", "403", "429", "quota", "credit", "not set", "KeyError"))
                 with _lock:
                     _fail_counts[name] = _fail_counts.get(name, 0) + 1
-                    if hard or _fail_counts[name] >= 4:
+                    if hard or _fail_counts[name] >= 6:
                         _disabled[name] = True
                         log(f"-> switching {name} off for the rest of this run")
                 if hard:
@@ -371,7 +498,7 @@ def make_images(scenes, style_look, style_name, order):
         jobs.append((i, full, compact))
     results = [None] * len(scenes)
     used = [None] * len(scenes)
-    with ThreadPoolExecutor(max_workers=3) as ex:
+    with ThreadPoolExecutor(max_workers=6) as ex:
         futs = {ex.submit(generate_image, i, full, compact, order): i for i, full, compact in jobs}
         for f, i in futs.items():
             im, name = f.result()
@@ -600,7 +727,7 @@ def main():
         scenes = payload["scenes"]
         narration = " ".join(s["narration"].strip() for s in scenes)
         script_words = narration.split()
-        order = [x.strip() for x in os.environ.get("IMAGE_PROVIDER_ORDER", "hf,cloudflare,colab").split(",") if x.strip()]
+        order = [x.strip() for x in (os.environ.get('ENGLISH_IMAGE_ORDER') or 'hfspace,cloudflare,pollinations').split(',') if x.strip()]
         log("provider order:", order)
 
         voice = os.path.join(WORK, "voice.wav")

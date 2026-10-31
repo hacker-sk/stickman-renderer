@@ -204,53 +204,109 @@ def make_voice_fish(text, path):
     EL_ALIGN.clear()
 
 
+_GEM = {'cur': 0, 'dead': {}}
+_GEM_LOCK = threading.Lock()
+
+
+def gemini_keys():
+    keys = []
+    seen = set()
+    for suffix in ('', '_2', '_3', '_4', '_5', '_6'):
+        k = os.environ.get('GEMINI_API_KEY' + suffix, '').strip()
+        if k and k not in seen:
+            seen.add(k)
+            keys.append(('gemini key ' + (suffix[1:] if suffix else '1'), k))
+    return keys
+
+
+def gemini_call(model, body, timeout=300):
+    '''POST to Gemini generateContent. Rotates to another key on HTTP 429, RESOURCE_EXHAUSTED or quota errors.
+    Exhausted keys are skipped (60s for per-minute limits, 6h for daily limits). Never loops forever.'''
+    keys = gemini_keys()
+    if not keys:
+        raise RuntimeError('No GEMINI_API_KEY secret is set')
+    url = 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent'
+    waits = 0
+    while True:
+        now = time.time()
+        with _GEM_LOCK:
+            live = [i for i, kk in enumerate(keys) if _GEM['dead'].get(kk[0] + '|' + model, 0) <= now]
+            cur = _GEM['cur']
+        if not live:
+            with _GEM_LOCK:
+                soon = min(_GEM['dead'].get(kk[0] + '|' + model, 0) for kk in keys)
+            wait = soon - now
+            if wait <= 75 and waits < 2:
+                waits += 1
+                log('every Gemini key is rate limited, waiting ' + str(int(wait) + 2) + 's')
+                time.sleep(wait + 2)
+                continue
+            raise RuntimeError('Gemini quota: all ' + str(len(keys)) + ' API keys are exhausted for ' + model)
+        idx = cur if cur in live else live[0]
+        label, key = keys[idx]
+        r = requests.post(url, headers={'x-goog-api-key': key, 'Content-Type': 'application/json'},
+                          data=json.dumps(body), timeout=timeout)
+        if r.status_code == 200:
+            with _GEM_LOCK:
+                _GEM['cur'] = idx
+            return r.json()
+        low = r.text.lower()
+        if r.status_code == 429 or 'resource_exhausted' in low or 'quota' in low:
+            compact = low.replace(' ', '').replace('_', '')
+            daily = ('perday' in compact) or ('daily' in compact)
+            with _GEM_LOCK:
+                _GEM['dead'][label + '|' + model] = time.time() + (6 * 3600 if daily else 65)
+                nxt = [x for x in live if x != idx]
+                if nxt:
+                    _GEM['cur'] = nxt[0]
+            log(label + ' hit its limit (HTTP ' + str(r.status_code) + ', ' + ('daily' if daily else 'per minute') + '), rotating to the next key')
+            continue
+        raise RuntimeError('Gemini HTTP ' + str(r.status_code) + ': ' + r.text[:200])
+
+
 def make_voice_gemini(text, path):
     if FAKE:
         return make_voice_elevenlabs(text, path)
     payload = json.loads(os.environ['PAYLOAD'])
-    key = os.environ['GEMINI_API_KEY']
     voice = payload.get('gemini_voice') or 'Puck'
     style = payload.get('gemini_style') or ''
     models = payload.get('gemini_models') or ['gemini-2.5-flash-preview-tts', 'gemini-2.5-pro-preview-tts']
     full = (style + ' ' + text) if style else text
     nwords = len(text.split())
+    body = {'contents': [{'parts': [{'text': full}]}],
+            'generationConfig': {'responseModalities': ['AUDIO'],
+                                 'speechConfig': {'voiceConfig': {'prebuiltVoiceConfig': {'voiceName': voice}}}}}
     last = ''
-    for attempt in range(4):
-        model = models[min(attempt // 2, len(models) - 1)]
-        try:
-            url = 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent'
-            body = {'contents': [{'parts': [{'text': full}]}],
-                    'generationConfig': {'responseModalities': ['AUDIO'],
-                                         'speechConfig': {'voiceConfig': {'prebuiltVoiceConfig': {'voiceName': voice}}}}}
-            r = requests.post(url, headers={'x-goog-api-key': key, 'Content-Type': 'application/json'},
-                              data=json.dumps(body), timeout=240)
-            if r.status_code != 200:
-                raise RuntimeError('Gemini TTS HTTP ' + str(r.status_code) + ': ' + r.text[:200])
-            data = r.json()
-            pcm = None
-            cands = data.get('candidates') or [{}]
-            for p in ((cands[0].get('content') or {}).get('parts')) or []:
-                inl = p.get('inlineData') or p.get('inline_data')
-                if inl and inl.get('data'):
-                    pcm = base64.b64decode(inl['data'])
+    for model in models:
+        for attempt in range(2):
+            try:
+                data = gemini_call(model, body, timeout=240)
+                pcm = None
+                cands = data.get('candidates') or [{}]
+                for p in ((cands[0].get('content') or {}).get('parts')) or []:
+                    inl = p.get('inlineData') or p.get('inline_data')
+                    if inl and inl.get('data'):
+                        pcm = base64.b64decode(inl['data'])
+                        break
+                if not pcm:
+                    raise RuntimeError('Gemini TTS returned no audio')
+                secs = len(pcm) / 48000.0
+                if secs < nwords * 0.18:
+                    raise RuntimeError('Gemini audio too short (' + str(round(secs, 1)) + 's for ' + str(nwords) + ' words)')
+                with wave.open(path, 'wb') as wf:
+                    wf.setnchannels(1)
+                    wf.setsampwidth(2)
+                    wf.setframerate(24000)
+                    wf.writeframes(pcm)
+                EL_ALIGN.clear()
+                log('Gemini voice ' + voice + ' made with ' + model)
+                return
+            except Exception as e:  # noqa
+                last = str(e)
+                log('Gemini voice try ' + str(attempt + 1) + ' failed (' + model + '): ' + last[:160])
+                if 'API keys are exhausted' in last:
                     break
-            if not pcm:
-                raise RuntimeError('Gemini TTS returned no audio')
-            secs = len(pcm) / 48000.0
-            if secs < nwords * 0.18:
-                raise RuntimeError('Gemini audio too short (' + str(round(secs, 1)) + 's for ' + str(nwords) + ' words)')
-            with wave.open(path, 'wb') as wf:
-                wf.setnchannels(1)
-                wf.setsampwidth(2)
-                wf.setframerate(24000)
-                wf.writeframes(pcm)
-            EL_ALIGN.clear()
-            log('Gemini voice ' + voice + ' made with ' + model)
-            return
-        except Exception as e:  # noqa
-            last = str(e)
-            log('Gemini voice try ' + str(attempt + 1) + ' failed (' + model + '): ' + last[:160])
-            time.sleep(30 if '429' in last else 6 * (attempt + 1))
+                time.sleep(6 * (attempt + 1))
     raise RuntimeError(last)
 
 
@@ -346,36 +402,106 @@ def whisper_heard(audio_path):
     return out
 
 
-def map_by_chars(script_words, heard):
-    """Place every script word on the real speech timeline using what Whisper heard (pauses and pace included)."""
+def norm_hi(w):
+    out = []
+    for ch in w.lower():
+        o = ord(ch)
+        if ch.isalnum() or (0x0900 <= o <= 0x097F and o not in (0x0964, 0x0965)):
+            out.append(ch)
+    return ''.join(out)
+
+
+def word_sim(a, b):
+    if not a or not b:
+        return 0.0
+    if a == b:
+        return 1.0
+    return difflib.SequenceMatcher(None, a, b).ratio()
+
+
+def map_by_chars(script_words, heard, t_lo=None, t_hi=None):
+    '''Place every script word on the real speech timeline. Words that Whisper actually heard (found by sequence
+    alignment) keep their real start and end times, pauses and speaking speed included. Only words Whisper missed
+    are spread inside the gap between two real timestamps.'''
     if len(heard) < 3:
         raise RuntimeError('Whisper heard too few words')
-    pos = [0]
-    for h in heard:
-        pos.append(pos[-1] + len(h[0]))
-    lw = float(pos[-1])
-    sw = [len(w) for w in script_words]
-    ls = float(sum(sw))
-
-    def time_at(x, is_start):
-        x = min(max(x, 0.0), lw)
-        for i in range(len(heard)):
-            inside = (x < pos[i + 1]) if is_start else (x <= pos[i + 1])
-            if inside or i == len(heard) - 1:
-                a = pos[i]
-                b = pos[i + 1]
-                frac = 0.0 if b == a else min(1.0, max(0.0, (x - a) / (b - a)))
-                return heard[i][1] + frac * (heard[i][2] - heard[i][1])
-        return heard[-1][2]
-
-    out = []
-    c = 0.0
-    for w, n in zip(script_words, sw):
-        s = time_at(c / ls * lw, True)
-        e = time_at((c + n) / ls * lw, False)
-        c += n
-        out.append((w, s, max(e, s + 0.12)))
-    return out
+    n, m = len(script_words), len(heard)
+    sn = [norm_hi(w) for w in script_words]
+    hn = [norm_hi(h[0]) for h in heard]
+    GAP = -0.35
+    score = [[0.0] * (m + 1) for _ in range(n + 1)]
+    back = [[0] * (m + 1) for _ in range(n + 1)]
+    for i in range(1, n + 1):
+        score[i][0] = i * GAP
+        back[i][0] = 1
+    for j in range(1, m + 1):
+        score[0][j] = j * GAP
+        back[0][j] = 2
+    for i in range(1, n + 1):
+        for j in range(1, m + 1):
+            s = word_sim(sn[i - 1], hn[j - 1])
+            best = score[i - 1][j - 1] + ((s - 0.5) if s >= 0.5 else -0.6)
+            b = 0
+            up = score[i - 1][j] + GAP
+            if up > best:
+                best = up
+                b = 1
+            left = score[i][j - 1] + GAP
+            if left > best:
+                best = left
+                b = 2
+            score[i][j] = best
+            back[i][j] = b
+    anchors = {}
+    i, j = n, m
+    while i > 0 or j > 0:
+        if i > 0 and j > 0:
+            b = back[i][j]
+        else:
+            b = 1 if i > 0 else 2
+        if b == 0:
+            if word_sim(sn[i - 1], hn[j - 1]) >= 0.5:
+                anchors[i - 1] = j - 1
+            i -= 1
+            j -= 1
+        elif b == 1:
+            i -= 1
+        else:
+            j -= 1
+    lo = t_lo if t_lo is not None else heard[0][1]
+    hi = t_hi if t_hi is not None else heard[-1][2]
+    out = [None] * n
+    for i, j in anchors.items():
+        out[i] = (script_words[i], float(heard[j][1]), float(heard[j][2]))
+    i = 0
+    while i < n:
+        if out[i] is not None:
+            i += 1
+            continue
+        k = i
+        while k < n and out[k] is None:
+            k += 1
+        left = out[i - 1][2] if i > 0 else lo
+        right = out[k][1] if k < n else hi
+        if right < left + 0.1 * (k - i):
+            right = left + 0.1 * (k - i)
+        weights = [max(1, len(sn[x])) for x in range(i, k)]
+        tot = float(sum(weights))
+        t = left
+        for x, wgt in zip(range(i, k), weights):
+            d = (right - left) * wgt / tot
+            out[x] = (script_words[x], t, t + d * 0.92)
+            t += d
+        i = k
+    fixed = []
+    prev = lo
+    for w, a, b in out:
+        a = max(a, prev)
+        b = max(b, a + 0.1)
+        fixed.append((w, a, b))
+        prev = a
+    log('word timing: ' + str(len(anchors)) + ' of ' + str(n) + ' words matched to real audio timestamps')
+    return fixed
 
 
 def find_silences(audio_path):
@@ -407,7 +533,7 @@ def align_words(script_words, duration, audio_path):
         return map_by_chars(script_words, heard)
     except Exception as e:  # noqa
         log('Using estimated word timing:', str(e)[:150])
-        return estimate_words(script_words, duration)
+        raise RuntimeError('Word-level audio timing failed (Whisper): ' + str(e)[:150])
 
 
 # ----------------------------------------------------------------------------- images

@@ -29,18 +29,8 @@ log = rh.log
 
 
 # ----------------------------------------------------------------------------- voice (Gemini, in parts)
-def gemini_tts_chunk(text, voice, model, key):
-    body = {'contents': [{'parts': [{'text': text}]}],
-            'generationConfig': {'responseModalities': ['AUDIO'],
-                                 'speechConfig': {'voiceConfig': {'prebuiltVoiceConfig': {'voiceName': voice}}}}}
-    data = rh.gemini_call(model, body, timeout=300)
-    cands = data.get('candidates') or [{}]
-    parts = ((cands[0].get('content') or {}).get('parts')) or []
-    for p in parts:
-        inline = p.get('inlineData') or p.get('inline_data')
-        if inline and inline.get('data'):
-            return base64.b64decode(inline['data'])
-    raise RuntimeError('Gemini TTS returned no audio: ' + json.dumps(data)[:200])
+def gemini_tts_chunk(text, voice, model, key, style=''):
+    return rh.gemini_tts_audio(text, voice, model, style)
 
 
 def split_chunks(scenes, max_words):
@@ -63,7 +53,7 @@ def split_chunks(scenes, max_words):
 def make_voice_gemini(scenes, payload, path):
     key = ''
     voice = payload.get('tts_voice') or 'Charon'
-    models = payload.get('tts_models') or ['gemini-2.5-flash-preview-tts', 'gemini-2.5-pro-preview-tts']
+    models = payload.get('tts_models') or ['gemini-3.8-flash-tts', 'gemini-2.5-flash-preview-tts']
     max_words = int(payload.get('tts_chunk_words') or 180)
     pause = float(payload.get('tts_pause_seconds') or 21)
     style = str(payload.get('tts_style') or '').strip()
@@ -79,7 +69,7 @@ def make_voice_gemini(scenes, payload, path):
         for attempt in range(6):
             model = models[min(attempt // 3, len(models) - 1)]
             try:
-                pcm = gemini_tts_chunk((style + ' ' + text) if style else text, voice, model, key)
+                pcm = gemini_tts_chunk(text, voice, model, key, style)
                 secs = len(pcm) / 48000.0
                 if secs < nwords * 0.18:
                     raise RuntimeError('audio too short (' + str(round(secs, 1)) + 's for ' + str(nwords) + ' words)')

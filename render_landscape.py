@@ -30,15 +30,10 @@ log = rh.log
 
 # ----------------------------------------------------------------------------- voice (Gemini, in parts)
 def gemini_tts_chunk(text, voice, model, key):
-    url = 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent'
     body = {'contents': [{'parts': [{'text': text}]}],
             'generationConfig': {'responseModalities': ['AUDIO'],
                                  'speechConfig': {'voiceConfig': {'prebuiltVoiceConfig': {'voiceName': voice}}}}}
-    r = requests.post(url, headers={'x-goog-api-key': key, 'Content-Type': 'application/json'},
-                      data=json.dumps(body), timeout=300)
-    if r.status_code != 200:
-        raise RuntimeError('Gemini TTS HTTP ' + str(r.status_code) + ': ' + r.text[:200])
-    data = r.json()
+    data = rh.gemini_call(model, body, timeout=300)
     cands = data.get('candidates') or [{}]
     parts = ((cands[0].get('content') or {}).get('parts')) or []
     for p in parts:
@@ -66,7 +61,7 @@ def split_chunks(scenes, max_words):
 
 
 def make_voice_gemini(scenes, payload, path):
-    key = os.environ['GEMINI_API_KEY']
+    key = ''
     voice = payload.get('tts_voice') or 'Charon'
     models = payload.get('tts_models') or ['gemini-2.5-flash-preview-tts', 'gemini-2.5-pro-preview-tts']
     max_words = int(payload.get('tts_chunk_words') or 180)
@@ -93,7 +88,9 @@ def make_voice_gemini(scenes, payload, path):
                 msg = str(e)
                 pcm = None
                 log('voice part ' + str(ci + 1) + ' try ' + str(attempt + 1) + ' failed (' + model + '): ' + msg[:160])
-                time.sleep(65 if '429' in msg else 8 * (attempt + 1))
+                if 'API keys are exhausted' in msg:
+                    break
+                time.sleep(8 * (attempt + 1))
         if pcm is None:
             raise RuntimeError('Gemini voice failed for part ' + str(ci + 1) + ' of ' + str(len(groups)))
         if ci > 0:
@@ -114,25 +111,13 @@ def make_voice_gemini(scenes, payload, path):
 
 
 def align_by_chunks(scenes, chunks, voice):
-    heard = None
-    try:
-        heard = rh.whisper_heard(voice)
-        log('Whisper heard ' + str(len(heard)) + ' words')
-    except Exception as e:  # noqa
-        log('Whisper not available, using estimated word timing: ' + str(e)[:150])
+    heard = rh.whisper_heard(voice)
+    log('Whisper heard ' + str(len(heard)) + ' words')
     words = []
     for idxs, t0, t1 in chunks:
         cw = ' '.join(scenes[i]['narration'].strip() for i in idxs).split()
-        got = None
-        if heard:
-            hw = [h for h in heard if t0 - 0.3 <= h[1] < t1 + 0.3]
-            try:
-                got = rh.map_by_chars(cw, hw)
-            except Exception as e:  # noqa
-                log('part timing fell back to an estimate: ' + str(e)[:100])
-        if not got:
-            got = [(w, a + t0, b + t0) for (w, a, b) in rh.estimate_words(cw, t1 - t0)]
-        words.extend(got)
+        hw = [h for h in heard if t0 - 0.3 <= h[1] < t1 + 0.3]
+        words.extend(rh.map_by_chars(cw, hw, t0, t1))
     fixed = []
     prev = 0.0
     for w, a, b in words:
@@ -143,7 +128,6 @@ def align_by_chunks(scenes, chunks, voice):
     return fixed
 
 
-# ----------------------------------------------------------------------------- wide images
 def fit_wide(img):
     img = img.convert('RGB')
     ratio = img.width / img.height
@@ -237,8 +221,8 @@ def img_hfspace_wide(prompt, **_):
 
 
 def make_images_wide(scenes, style_look, style_name, order):
-    prefix = (style_look + ' Same recurring main character design and the same color palette in every image, '
-              'no text, no letters, no watermark, wide cinematic 16:9 landscape composition. Scene: ')
+    prefix = (style_look + ' Any recurring character keeps exactly the same design in every image. '
+              'Flat colours, clean solid background, strong subject separation, no gradients, no 3D, no photorealism, no text, no letters, no watermark, wide 16:9 landscape composition. Scene: ')
     jobs = []
     for i, s in enumerate(scenes):
         full = prefix + s['image_prompt']
@@ -393,7 +377,7 @@ def main():
             cand = [m for m in sil if abs(m - b) <= 0.35]
             if cand:
                 b = min(cand, key=lambda m: abs(m - b))
-            bounds.append(max(bounds[-1] + 0.8, b))
+            bounds.append(max(bounds[-1] + 1.0, b))
         total = dur + 1.2
         bounds.append(total)
 

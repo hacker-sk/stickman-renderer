@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       job:
-        description: "Path of the job JSON file committed by n8n"
+        description: Path of the job JSON file in this repo
         required: true
 
 jobs:
@@ -18,7 +18,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: 3.11
           cache: pip
 
       - name: Install ffmpeg
@@ -35,7 +35,7 @@ jobs:
 
       - name: Render the landscape video
         env:
-          JOB_FILE: ${{ inputs.job }}
+          JOB_PATH: ${{ inputs.job }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_TOKEN_2: ${{ secrets.HF_TOKEN_2 }}
@@ -64,22 +64,16 @@ jobs:
         if: success()
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "landscape-video-${{ github.run_number }}" output/video.mp4 \
-            --title "Landscape video ${{ github.run_number }}" --notes "Rendered by run ${{ github.run_id }}" || true
+        run: gh release create landscape-video-${{ github.run_number }} output/video.mp4 --title 'Landscape video ${{ github.run_number }}' --notes 'Rendered by run ${{ github.run_id }}' || true
 
       - name: Tell n8n the job failed
         if: failure()
         env:
-          JOB_FILE: ${{ inputs.job }}
+          JOB_PATH: ${{ inputs.job }}
         run: python render_landscape.py --notify-failure
 
       - name: Remove the job file
         if: always()
-        run: |
-          git config user.name "render-bot"
-          git config user.email "render-bot@users.noreply.github.com"
-          git pull --rebase -q || true
-          git rm -q -f "${{ inputs.job }}" || true
-          git commit -q -m "cleanup job file" || true
-          git push -q || true
+        env:
+          JOB_PATH: ${{ inputs.job }}
+        run: git config user.name render-bot && git config user.email render-bot@users.noreply.github.com && git pull --rebase origin main; git rm -f $JOB_PATH; git commit -m 'Remove landscape job file'; git push; true

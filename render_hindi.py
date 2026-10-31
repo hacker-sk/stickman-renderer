@@ -204,7 +204,63 @@ def make_voice_fish(text, path):
     EL_ALIGN.clear()
 
 
+def make_voice_gemini(text, path):
+    if FAKE:
+        return make_voice_elevenlabs(text, path)
+    payload = json.loads(os.environ['PAYLOAD'])
+    key = os.environ['GEMINI_API_KEY']
+    voice = payload.get('gemini_voice') or 'Puck'
+    style = payload.get('gemini_style') or ''
+    models = payload.get('gemini_models') or ['gemini-2.5-flash-preview-tts', 'gemini-2.5-pro-preview-tts']
+    full = (style + ' ' + text) if style else text
+    nwords = len(text.split())
+    last = ''
+    for attempt in range(4):
+        model = models[min(attempt // 2, len(models) - 1)]
+        try:
+            url = 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent'
+            body = {'contents': [{'parts': [{'text': full}]}],
+                    'generationConfig': {'responseModalities': ['AUDIO'],
+                                         'speechConfig': {'voiceConfig': {'prebuiltVoiceConfig': {'voiceName': voice}}}}}
+            r = requests.post(url, headers={'x-goog-api-key': key, 'Content-Type': 'application/json'},
+                              data=json.dumps(body), timeout=240)
+            if r.status_code != 200:
+                raise RuntimeError('Gemini TTS HTTP ' + str(r.status_code) + ': ' + r.text[:200])
+            data = r.json()
+            pcm = None
+            cands = data.get('candidates') or [{}]
+            for p in ((cands[0].get('content') or {}).get('parts')) or []:
+                inl = p.get('inlineData') or p.get('inline_data')
+                if inl and inl.get('data'):
+                    pcm = base64.b64decode(inl['data'])
+                    break
+            if not pcm:
+                raise RuntimeError('Gemini TTS returned no audio')
+            secs = len(pcm) / 48000.0
+            if secs < nwords * 0.18:
+                raise RuntimeError('Gemini audio too short (' + str(round(secs, 1)) + 's for ' + str(nwords) + ' words)')
+            with wave.open(path, 'wb') as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(24000)
+                wf.writeframes(pcm)
+            EL_ALIGN.clear()
+            log('Gemini voice ' + voice + ' made with ' + model)
+            return
+        except Exception as e:  # noqa
+            last = str(e)
+            log('Gemini voice try ' + str(attempt + 1) + ' failed (' + model + '): ' + last[:160])
+            time.sleep(30 if '429' in last else 6 * (attempt + 1))
+    raise RuntimeError(last)
+
+
 def make_voice(text, path):
+    try:
+        make_voice_gemini(text, path)
+        log('voice made by Gemini')
+        return
+    except Exception as e:  # noqa
+        log('Gemini voice failed, trying ElevenLabs:', str(e)[:200])
     try:
         make_voice_elevenlabs(text, path)
         log('voice made by ElevenLabs')

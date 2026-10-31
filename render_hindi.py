@@ -244,8 +244,9 @@ def gemini_call(model, body, timeout=300):
             raise RuntimeError('Gemini quota: all ' + str(len(keys)) + ' API keys are exhausted for ' + model)
         idx = cur if cur in live else live[0]
         label, key = keys[idx]
+        send = body(label, key) if callable(body) else body
         r = requests.post(url, headers={'x-goog-api-key': key, 'Content-Type': 'application/json'},
-                          data=json.dumps(body), timeout=timeout)
+                          data=json.dumps(send), timeout=timeout)
         if r.status_code == 200:
             with _GEM_LOCK:
                 _GEM['cur'] = idx
@@ -264,32 +265,126 @@ def gemini_call(model, body, timeout=300):
         raise RuntimeError('Gemini HTTP ' + str(r.status_code) + ': ' + r.text[:200])
 
 
+DESIGN_NAME = 'Bunty-style Hindi reel male'
+DESIGN_DESC = 'A vibrant young Indian male in his mid-20s, a Hindi reel creator with a bright, crisp, punchy voice, sharp clearly articulated consonants and a confident, rhythmic delivery at a steady medium pace.'
+_DV = {}
+_DV_LOCK = threading.Lock()
+
+
+def designed_voice_id(label, key):
+    '''Saved Gemini designed voice for the project behind this API key. Voices belong to a project, so the voice is looked
+    up by name for every key and created once when it is missing. Returns an empty string when that fails.'''
+    with _DV_LOCK:
+        if _DV.get(label):
+            return _DV[label]
+        h = {'x-goog-api-key': key, 'Content-Type': 'application/json'}
+        base = 'https://generativelanguage.googleapis.com/v1beta/voices'
+
+        def vid_of(v):
+            return str(v.get('id') or v.get('voice_id') or v.get('name') or '').split('/')[-1]
+
+        vid = ''
+        try:
+            r = requests.get(base, headers=h, params={'type': 'prompted'}, timeout=60)
+            if r.status_code == 200:
+                for v in r.json().get('voices') or []:
+                    if v.get('display_name') == DESIGN_NAME and vid_of(v).startswith('voice_'):
+                        vid = vid_of(v)
+                        break
+                if not vid:
+                    body = {'store': True, 'voice': {'model': 'gemini-3.8-flash-tts', 'type': 'prompted',
+                                                     'display_name': DESIGN_NAME, 'gender': 'male', 'language_code': 'hi-IN',
+                                                     'prompted': {'input': DESIGN_DESC}}}
+                    r2 = requests.post(base, headers=h, data=json.dumps(body), timeout=180)
+                    if r2.status_code == 200:
+                        vid = vid_of(r2.json())
+                        log('created the designed Hindi voice for ' + label + ': ' + vid)
+                    else:
+                        log('designed voice create HTTP ' + str(r2.status_code) + ': ' + r2.text[:160])
+            else:
+                log('designed voice list HTTP ' + str(r.status_code) + ': ' + r.text[:120])
+        except Exception as e:  # noqa
+            log('designed voice lookup failed: ' + str(e)[:150])
+        if vid:
+            _DV[label] = vid
+            log('designed Hindi voice for ' + label + ': ' + vid)
+        return vid
+
+
+def pcm_from_audio(raw):
+    '''Mono 16-bit 24 kHz PCM from Gemini audio: the 3.x models answer with a WAV file, the 2.5 models with raw PCM.'''
+    if raw[:4] == b'RIFF':
+        p = subprocess.run(['ffmpeg', '-loglevel', 'error', '-i', 'pipe:0', '-f', 's16le', '-ar', '24000', '-ac', '1', 'pipe:1'],
+                           input=raw, capture_output=True)
+        if p.returncode != 0 or not p.stdout:
+            raise RuntimeError('could not decode the Gemini WAV audio: ' + p.stderr.decode('utf-8', 'ignore')[:120])
+        return p.stdout
+    return raw
+
+
+def gemini_tts_audio(text, voice, model, style=''):
+    '''One Gemini TTS call that returns mono 24 kHz PCM. The gemini-3.x models take the delivery style in speech_metadata and
+    a voice name, or the saved designed voice (designed), in voiceConfig.voice. The older 2.5 models take the style as a
+    sentence in front of the script and a prebuilt voice name.'''
+    voice = voice or 'Puck'
+    designed = voice == 'designed' or voice.startswith('voice_')
+    modern = model.startswith('gemini-3')
+
+    def build(label, key):
+        if modern:
+            v = voice
+            if designed:
+                v = designed_voice_id(label, key)
+                if not v:
+                    raise RuntimeError('designed voice is not available for ' + label)
+            part = {'text': text}
+            if style:
+                part['speech_metadata'] = {'style': style}
+            vc = {'voice': v}
+        else:
+            part = {'text': ('Say this in a ' + style + ' voice: ' + text) if style else text}
+            vc = {'prebuiltVoiceConfig': {'voiceName': 'Sadachbia' if designed else voice}}
+        return {'contents': [{'parts': [part]}],
+                'generationConfig': {'responseModalities': ['AUDIO'], 'speechConfig': {'voiceConfig': vc}}}
+
+    data = gemini_call(model, build, timeout=300)
+    cands = data.get('candidates') or [{}]
+    for p in ((cands[0].get('content') or {}).get('parts')) or []:
+        inl = p.get('inlineData') or p.get('inline_data')
+        if inl and inl.get('data'):
+            return pcm_from_audio(base64.b64decode(inl['data']))
+    raise RuntimeError('Gemini TTS returned no audio: ' + json.dumps(data)[:200])
+
+
+def fit_voice_length(path, limit):
+    '''A steadier voice can run past the video limit. Speed it up slightly (pitch kept) so it fits, never above 1.25x.'''
+    try:
+        dur = audio_duration(path)
+        if dur <= limit or dur > limit * 1.25:
+            return
+        ratio = dur / (limit - 0.5)
+        tmp = path + '.fit.wav'
+        subprocess.run(['ffmpeg', '-y', '-loglevel', 'error', '-i', path, '-filter:a', 'atempo=' + format(ratio, '.4f'),
+                        '-ar', '24000', '-ac', '1', tmp], check=True)
+        os.replace(tmp, path)
+        log('voice was ' + str(round(dur, 1)) + 's, sped up x' + format(ratio, '.3f') + ' to fit the ' + str(int(limit)) + 's limit')
+    except Exception as e:  # noqa
+        log('voice length fit skipped: ' + str(e)[:120])
+
+
 def make_voice_gemini(text, path):
     if FAKE:
         return make_voice_elevenlabs(text, path)
     payload = json.loads(os.environ['PAYLOAD'])
     voice = payload.get('gemini_voice') or 'Puck'
     style = payload.get('gemini_style') or ''
-    models = payload.get('gemini_models') or ['gemini-2.5-flash-preview-tts', 'gemini-2.5-pro-preview-tts']
-    full = (style + ' ' + text) if style else text
+    models = payload.get('gemini_models') or ['gemini-3.8-flash-tts', 'gemini-2.5-flash-preview-tts']
     nwords = len(text.split())
-    body = {'contents': [{'parts': [{'text': full}]}],
-            'generationConfig': {'responseModalities': ['AUDIO'],
-                                 'speechConfig': {'voiceConfig': {'prebuiltVoiceConfig': {'voiceName': voice}}}}}
     last = ''
     for model in models:
         for attempt in range(2):
             try:
-                data = gemini_call(model, body, timeout=240)
-                pcm = None
-                cands = data.get('candidates') or [{}]
-                for p in ((cands[0].get('content') or {}).get('parts')) or []:
-                    inl = p.get('inlineData') or p.get('inline_data')
-                    if inl and inl.get('data'):
-                        pcm = base64.b64decode(inl['data'])
-                        break
-                if not pcm:
-                    raise RuntimeError('Gemini TTS returned no audio')
+                pcm = gemini_tts_audio(text, voice, model, style)
                 secs = len(pcm) / 48000.0
                 if secs < nwords * 0.18:
                     raise RuntimeError('Gemini audio too short (' + str(round(secs, 1)) + 's for ' + str(nwords) + ' words)')
@@ -298,6 +393,7 @@ def make_voice_gemini(text, path):
                     wf.setsampwidth(2)
                     wf.setframerate(24000)
                     wf.writeframes(pcm)
+                fit_voice_length(path, 57.5)
                 EL_ALIGN.clear()
                 log('Gemini voice ' + voice + ' made with ' + model)
                 return

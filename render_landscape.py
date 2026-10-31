@@ -71,6 +71,7 @@ def make_voice_gemini(scenes, payload, path):
     models = payload.get('tts_models') or ['gemini-2.5-flash-preview-tts', 'gemini-2.5-pro-preview-tts']
     max_words = int(payload.get('tts_chunk_words') or 180)
     pause = float(payload.get('tts_pause_seconds') or 21)
+    style = str(payload.get('tts_style') or '').strip()
     groups = split_chunks(scenes, max_words)
     log('voice: ' + str(len(groups)) + ' parts, voice ' + voice)
     pcm_all = bytearray()
@@ -83,7 +84,7 @@ def make_voice_gemini(scenes, payload, path):
         for attempt in range(6):
             model = models[min(attempt // 3, len(models) - 1)]
             try:
-                pcm = gemini_tts_chunk(text, voice, model, key)
+                pcm = gemini_tts_chunk((style + ' ' + text) if style else text, voice, model, key)
                 secs = len(pcm) / 48000.0
                 if secs < nwords * 0.18:
                     raise RuntimeError('audio too short (' + str(round(secs, 1)) + 's for ' + str(nwords) + ' words)')

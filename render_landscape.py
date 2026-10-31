@@ -382,7 +382,11 @@ def main():
         bounds.append(total)
 
         canvases, used = make_images_wide(scenes, payload.get('style_look', ''), payload.get('art_style', 'illustration'), order)
-        music_path, music_name = rh.pick_music(payload.get('mood', 'calm'))
+        if payload.get('background_music') is True:
+            music_path, music_name = rh.pick_music(payload.get('mood', 'calm'))
+        else:
+            music_path, music_name = None, ''
+            log('background music is off for landscape videos')
         mixed = os.path.join(rh.WORK, 'mix.wav')
         rh.mix_audio(voice, music_path, total, mixed)
 

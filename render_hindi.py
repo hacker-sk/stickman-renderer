@@ -914,13 +914,13 @@ def generate_image(idx, prompt, compact, order):
 
 
 def make_images(scenes, style_look, style_name, order):
-    prefix = (f"{style_look} Same recurring main character design and the same color palette in every image, "
+    prefix = (f"{style_look} Keep a recurring character or place the same only where the story needs it, and show new subjects and surroundings otherwise. "
               f"no text, no letters, no watermark, vertical 9:16 composition. Scene: ")
     jobs = []
     for i, s in enumerate(scenes):
         full = prefix + s["image_prompt"]
         scene_short = " ".join(s["image_prompt"].split()[:42])
-        compact = f"{style_name} illustration, same recurring character, no text. {scene_short}"
+        compact = f"{style_name} illustration, no text. {scene_short}"
         jobs.append((i, full, compact))
     results = [None] * len(scenes)
     used = [None] * len(scenes)

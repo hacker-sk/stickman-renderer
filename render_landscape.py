@@ -211,13 +211,13 @@ def img_hfspace_wide(prompt, **_):
 
 
 def make_images_wide(scenes, style_look, style_name, order):
-    prefix = (style_look + ' Any recurring character keeps exactly the same design in every image. '
-              'Flat colours, clean solid background, strong subject separation, no gradients, no 3D, no photorealism, no text, no letters, no watermark, wide 16:9 landscape composition. Scene: ')
+    prefix = (style_look + ' Keep a recurring character or place the same only where the story needs it, and show new subjects and surroundings otherwise. '
+              'No text, no letters, no watermark, wide 16:9 landscape composition. Scene: ')
     jobs = []
     for i, s in enumerate(scenes):
         full = prefix + s['image_prompt']
         short = ' '.join(s['image_prompt'].split()[:42])
-        compact = style_name + ' illustration, same recurring character, no text, wide 16:9. ' + short
+        compact = style_name + ' illustration, no text, wide 16:9. ' + short
         jobs.append((i, full, compact))
     results = [None] * len(scenes)
     used = [None] * len(scenes)

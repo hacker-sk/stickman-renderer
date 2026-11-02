@@ -210,14 +210,14 @@ def img_hfspace_wide(prompt, **_):
     raise RuntimeError('Hugging Face queue was busy or failed, falling back to the next image source')
 
 
-def make_images_wide(scenes, style_look, style_name, order):
-    prefix = (style_look + ' Keep a recurring character or place the same only where the story needs it, and show new subjects and surroundings otherwise. '
-              'No text, no letters, no watermark, wide 16:9 landscape composition. Scene: ')
+def make_images_wide(scenes, style_look, style_name, order, style_key=''):
+    # Every image prompt is already self-contained, so only the art style line and the frame shape are added here.
+    prefix = '' if style_key == 'doodle' else (style_look + ' Wide 16:9 landscape composition. Scene: ')
     jobs = []
     for i, s in enumerate(scenes):
         full = prefix + s['image_prompt']
         short = ' '.join(s['image_prompt'].split()[:42])
-        compact = style_name + ' illustration, no text, wide 16:9. ' + short
+        compact = short if style_key == 'doodle' else style_name + ' illustration, wide 16:9. ' + short
         jobs.append((i, full, compact))
     results = [None] * len(scenes)
     used = [None] * len(scenes)
@@ -371,7 +371,7 @@ def main():
         total = dur + 1.2
         bounds.append(total)
 
-        canvases, used = make_images_wide(scenes, payload.get('style_look', ''), payload.get('art_style', 'illustration'), order)
+        canvases, used = make_images_wide(scenes, payload.get('style_look', ''), payload.get('art_style', 'illustration'), order, payload.get('art_style_key', ''))
         if payload.get('background_music') is True:
             music_path, music_name = rh.pick_music(payload.get('mood', 'calm'))
         else:

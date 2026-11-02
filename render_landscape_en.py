@@ -306,14 +306,12 @@ def img_hfspace_wide(prompt, **_):
 
 
 def make_images_wide(scenes, style_look, style_name, order):
-    prefix = (style_look + ' Keep a recurring character or place the same only where the story needs it, and show new subjects and surroundings otherwise. '
-              'No text, no letters, no watermark, wide 16:9 landscape composition. Scene: ')
+    '''Every image prompt is sent exactly as the script writer made it, to every provider, with nothing added, cut or simplified.'''
     jobs = []
     for i, s in enumerate(scenes):
-        full = prefix + s['image_prompt']
-        short = ' '.join(s['image_prompt'].split()[:42])
-        compact = style_name + ' illustration, no text, wide 16:9. ' + short
-        jobs.append((i, full, compact))
+        prompt = str(s['image_prompt']).strip()
+        jobs.append((i, prompt, prompt))
+
     results = [None] * len(scenes)
     used = [None] * len(scenes)
     with ThreadPoolExecutor(max_workers=6) as ex:

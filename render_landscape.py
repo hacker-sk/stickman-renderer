@@ -344,6 +344,8 @@ def main():
             order.append('pollinations')
         rh.PROVIDERS['hfspace'] = img_hfspace_wide
         rh.PROVIDERS['pollinations'] = img_poll_wide
+        import render_landscape_wide as rlw
+        rlw.install(rh)
         log('scenes: ' + str(len(scenes)) + ', provider order: ' + str(order))
 
         voice = os.path.join(rh.WORK, 'voice.wav')

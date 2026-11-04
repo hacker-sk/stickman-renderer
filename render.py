@@ -33,7 +33,15 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 W, H = 1080, 1920
 FPS = 30
 CANVAS_W, CANVAS_H = 1242, 2208          # source canvas is larger than the frame so zoom never upscales
-TRANSITIONS = {'fade': 0.5}   # name: seconds. Only the short cross-dissolve
+IMG_TOP, IMG_H = 200, 1350      # picture window: black bar above (200 px), black bar below (370 px) that holds the captions
+XFADE = 0.35                    # seconds: crossfade with a small zoom between scenes
+MOTIONS = ['pan_right', 'pan_left', 'slide_up', 'slide_down', 'zoom_in', 'zoom_out', 'focus']
+CAPTION_FONTS = [
+    ('LuckiestGuy-Regular.ttf', 'https://raw.githubusercontent.com/google/fonts/main/ofl/luckiestguy/LuckiestGuy-Regular.ttf'),
+    ('Bangers-Regular.ttf', 'https://raw.githubusercontent.com/google/fonts/main/ofl/bangers/Bangers-Regular.ttf'),
+]
+# (letter colour, outline colour): yellow, black and blue; the outline keeps every colour readable on the black bar
+CAPTION_COLORS = [((255, 214, 0), (0, 0, 0)), ((0, 0, 0), (255, 255, 255)), ((30, 144, 255), (255, 255, 255))]
 WORK = os.environ.get("WORK_DIR", "work")
 OUT = os.environ.get("OUT_DIR", "output")
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -67,6 +75,25 @@ def ensure_font():
             FONT_PATH = cand
             return cand
     return None
+
+
+def ensure_caption_font():
+    """Creative caption font (Luckiest Guy, else Bangers); falls back to the normal caption font if both fail."""
+    for fname, url in CAPTION_FONTS:
+        p = os.path.join(HERE, "fonts", fname)
+        if os.path.exists(p):
+            return p
+        try:
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            r = requests.get(url, timeout=30)
+            if r.status_code == 200 and len(r.content) > 20_000:
+                with open(p, "wb") as fh:
+                    fh.write(r.content)
+                log("downloaded caption font", fname)
+                return p
+        except Exception as e:  # noqa
+            log("caption font download failed:", fname, str(e)[:100])
+    return ensure_font()
 
 
 def log(*a):
@@ -561,32 +588,55 @@ def mix_audio(voice, music, total, out):
 
 # ----------------------------------------------------------------------------- frames
 class CaptionTrack:
-    """Groups words into short lines (max 4 words) and draws them with the current word highlighted."""
+    """Short caption lines (max 3 words) in the bottom black bar. Every word pops in as it is spoken,
+    and each line gets its own colour (yellow, black or blue, never the same twice in a row)."""
 
-    def __init__(self, words, font_size=84):
-        fp = ensure_font()
+    def __init__(self, words, font_size=96):
+        fp = ensure_caption_font()
         self.font = ImageFont.truetype(fp, font_size) if fp else ImageFont.load_default()
         self.chunks = []
         cur = []
         for w in words:
             cur.append(w)
-            text = w[0]
-            if len(cur) >= 4 or re.search(r"[.!?,;:]$", text):
+            if len(cur) >= 3 or re.search(r"[.!?,;:]$", w[0]):
                 self.chunks.append(cur)
                 cur = []
         if cur:
             self.chunks.append(cur)
-        self.space = self.font.getlength(" ")
+        self.space = self.font.getlength(" ") * 1.1
+        self.pad = 16
+        self.stroke = 8
+        self.cache = {}
+        self.colors = []
+        prev = -1
+        for _ in self.chunks:
+            c = random.choice([i for i in range(len(CAPTION_COLORS)) if i != prev])
+            self.colors.append(c)
+            prev = c
         self.layout = []
         for ch in self.chunks:
             widths = [self.font.getlength(w[0]) for w in ch]
             total = sum(widths) + self.space * (len(ch) - 1)
-            if total > W - 120:  # two lines when too wide
+            if total > W - 100:  # two lines when too wide
                 half = (len(ch) + 1) // 2
                 lines = [list(range(0, half)), list(range(half, len(ch)))]
             else:
                 lines = [list(range(len(ch)))]
             self.layout.append((widths, lines))
+        log('caption colours:', self.colors[:12])
+
+    def word_img(self, text, ci):
+        key = (text, ci)
+        im = self.cache.get(key)
+        if im is None:
+            fill, edge = CAPTION_COLORS[ci]
+            w = int(self.font.getlength(text)) + self.pad * 2
+            h = int(self.font.size * 1.5) + self.pad * 2
+            im = Image.new('RGBA', (w, h), (0, 0, 0, 0))
+            ImageDraw.Draw(im).text((self.pad, self.pad), text, font=self.font, fill=fill,
+                                    stroke_width=self.stroke, stroke_fill=edge)
+            self.cache[key] = im
+        return im
 
     def draw(self, img, t):
         idx = None
@@ -599,21 +649,27 @@ class CaptionTrack:
             return
         ch = self.chunks[idx]
         widths, lines = self.layout[idx]
-        d = ImageDraw.Draw(img)
-        line_h = int(self.font.size * 1.25)
-        y0 = int(H * 0.66) - (len(lines) - 1) * line_h // 2
+        ci = self.colors[idx]
+        bar_top = IMG_TOP + IMG_H
+        cy0 = (bar_top + H) // 2
+        line_h = int(self.font.size * 1.2)
+        y0 = cy0 - (len(lines) - 1) * line_h // 2
         for li, line in enumerate(lines):
             tw = sum(widths[k] for k in line) + self.space * (len(line) - 1)
             x = (W - tw) / 2
-            y = y0 + li * line_h
+            cy = y0 + li * line_h
             for k in line:
                 word = ch[k]
-                active = word[1] - 0.03 <= t < word[2] + 0.05
-                done = t >= word[2] + 0.05
-                color = (255, 230, 0) if active else (255, 255, 255)
-                if not (active or done):
-                    color = (255, 255, 255)
-                d.text((x, y), word[0], font=self.font, fill=color, stroke_width=8, stroke_fill=(0, 0, 0))
+                a = (t - word[1] + 0.03) / 0.18
+                if a >= 0:
+                    a = min(1.0, a)
+                    s = 1 + 2.70158 * (a - 1) ** 3 + 1.70158 * (a - 1) ** 2   # pop-in with a small overshoot
+                    im = self.word_img(word[0], ci)
+                    if abs(s - 1) > 0.01:
+                        sw, sh = max(1, int(im.width * s)), max(1, int(im.height * s))
+                        im = im.resize((sw, sh), Image.BILINEAR)
+                    cx = x + widths[k] / 2
+                    img.paste(im, (int(cx - im.width / 2), int(cy - im.height / 2)), im)
                 x += widths[k] + self.space
 
 
@@ -627,11 +683,39 @@ def smoother(x):
     return x * x * x * (x * (x * 6 - 15) + 10)
 
 
-def transition_frame(kind, old, new, p):
-    """One frame of a gentle cross-dissolve from image old to image new (p goes 0 to 1). No movement, no dark dip."""
-    if kind == 'fade':
-        return Image.blend(old, new, ease(p))
-    return Image.blend(old, new, smoother(p))
+def motion_plan(kind):
+    """(zoom start, zoom end, x start, x end, y start, y end). x and y are 0..1 positions inside the room the zoom leaves."""
+    r = random.random
+    if kind == 'pan_right':
+        return (1.15, 1.15, 0.05, 0.95, 0.4 + r() * 0.2, 0.4 + r() * 0.2)
+    if kind == 'pan_left':
+        return (1.15, 1.15, 0.95, 0.05, 0.4 + r() * 0.2, 0.4 + r() * 0.2)
+    if kind == 'slide_up':
+        return (1.06, 1.06, 0.5, 0.5, 0.30, 0.70)
+    if kind == 'slide_down':
+        return (1.06, 1.06, 0.5, 0.5, 0.70, 0.30)
+    if kind == 'zoom_in':
+        return (1.0, 1.16, 0.5, 0.5, 0.5, 0.5)
+    if kind == 'zoom_out':
+        return (1.16, 1.0, 0.5, 0.5, 0.5, 0.5)
+    tx = random.choice([0.15, 0.85])          # 'focus': zoom toward an off-centre spot
+    return (1.0, 1.2, 0.5, tx, 0.5, 0.35 + r() * 0.3)
+
+
+def view_frame(canvas, plan, u, extra=1.0):
+    """The picture window (W x IMG_H) at motion progress u (0..1). extra is the small zoom used during the crossfade."""
+    z0, z1, fx0, fx1, fy0, fy1 = plan
+    e = ease(u)
+    z = (z0 + (z1 - z0) * e) * extra
+    fx = fx0 + (fx1 - fx0) * e
+    fy = fy0 + (fy1 - fy0) * e
+    k = canvas.width / float(W)
+    vw, vh = W / z, IMG_H / z
+    cx = vw / 2 + fx * (W - vw)
+    cy = vh / 2 + fy * (H - vh)
+    box = (max(0.0, (cx - vw / 2) * k), max(0.0, (cy - vh / 2) * k),
+           min(float(canvas.width), (cx + vw / 2) * k), min(float(canvas.height), (cy + vh / 2) * k))
+    return canvas.resize((W, IMG_H), Image.BICUBIC, box=box)
 
 
 def render_video(canvases, bounds, captions, total, audio_path, out_path):
@@ -642,32 +726,39 @@ def render_video(canvases, bounds, captions, total, audio_path, out_path):
            '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', '-shortest', out_path]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
     n = len(canvases)
-    # images stay completely still; only a short cross-fade between scenes
-    statics = [c.resize((W, H), Image.LANCZOS) for c in canvases]
-    kinds = []
+    plans = []
     prev = None
-    for _ in range(max(0, n - 1)):
-        kind = random.choice([x for x in TRANSITIONS if x != prev] or list(TRANSITIONS))
-        kinds.append(kind)
+    for _ in range(n):
+        kind = random.choice([m for m in MOTIONS if m != prev])
+        plans.append(motion_plan(kind))
+        plans[-1] = (kind,) + plans[-1]
         prev = kind
-    log('transitions:', kinds)
+    log('motions:', [p[0] for p in plans])
+    half = XFADE / 2.0
+    black = Image.new('RGB', (W, H), (0, 0, 0))
+
+    def view(k, t, extra=1.0):
+        a = bounds[k] - (half if k > 0 else 0.0)
+        b = bounds[k + 1] + (half if k + 1 < n else 0.0)
+        u = (t - a) / max(0.1, b - a)
+        return view_frame(canvases[k], plans[k][1:], min(1.0, max(0.0, u)), extra)
+
     for f in range(nframes):
         t = f / FPS
         k = 0
         while k + 1 < n and t >= bounds[k + 1]:
             k += 1
-        start, end = bounds[k], bounds[k + 1]
-        frame = None
-        if k + 1 < n:
-            d = TRANSITIONS[kinds[k]]
-            if t > end - d / 2:
-                frame = transition_frame(kinds[k], statics[k], statics[k + 1], (t - (end - d / 2)) / d)
-        if frame is None and k > 0:
-            d = TRANSITIONS[kinds[k - 1]]
-            if t < start + d / 2:
-                frame = transition_frame(kinds[k - 1], statics[k - 1], statics[k], (t - (start - d / 2)) / d)
-        if frame is None:
-            frame = statics[k].copy()
+        pic = None
+        if k + 1 < n and t > bounds[k + 1] - half:
+            p = ease((t - (bounds[k + 1] - half)) / XFADE)
+            pic = Image.blend(view(k, t, 1 + 0.07 * p), view(k + 1, t, 1 + 0.07 * (1 - p)), p)
+        elif k > 0 and t < bounds[k] + half:
+            p = ease((t - (bounds[k] - half)) / XFADE)
+            pic = Image.blend(view(k - 1, t, 1 + 0.07 * p), view(k, t, 1 + 0.07 * (1 - p)), p)
+        else:
+            pic = view(k, t)
+        frame = black.copy()
+        frame.paste(pic, (0, IMG_TOP))
         captions.draw(frame, t)
         proc.stdin.write(frame.tobytes())
     proc.stdin.close()

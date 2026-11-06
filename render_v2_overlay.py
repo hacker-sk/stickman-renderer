@@ -5,6 +5,7 @@
 - HookOverlay: a short hook line in the top black bar, focus word in red with a soft glow, optional emoji.
 - fade_out: smooth fade to black over the last moments of the video.
 """
+import math
 import os
 import random
 import re
@@ -26,6 +27,7 @@ CAPTION_WHITE = (255, 255, 255)
 OUTLINE = (0, 0, 0)
 CAPTION_CENTER_BELOW_PICTURE = 125   # px below the bottom of the picture window (was the middle of the bar)
 FADE_OUT_SECONDS = 0.8
+MOTION_AMOUNT = 0.7        # how much of each image's original zoom/pan travel is kept (smaller = slower, gentler)
 
 
 def configure(w, h, img_top, img_h, caption_font_fn, log_fn, palette, here):
@@ -126,6 +128,8 @@ class CaptionTrack:
         cy0 = bar_top + CAPTION_CENTER_BELOW_PICTURE
         line_h = int(self.font.size * 1.2)
         y0 = cy0 - (len(lines) - 1) * line_h // 2
+        if CFG.get('CAP_LAST_Y') is not None:      # square layout: last caption line sits near the bottom of the picture
+            y0 = CFG['CAP_LAST_Y'] - (len(lines) - 1) * line_h
         for li, line in enumerate(lines):
             tw = sum(widths[k] for k in line) + self.space * (len(line) - 1)
             x = (W - tw) / 2
@@ -216,7 +220,7 @@ class HookOverlay:
             _log('hook skipped:', str(e)[:150])
 
     def _build(self, line, focus, emoji):
-        W, top_h = CFG['W'], CFG['IMG_TOP']
+        W, top_h = CFG['W'], (CFG.get('HOOK_H') or CFG['IMG_TOP'])
         fp = _hook_font_path()
         tokens = line.split(' ')
         accent = [False] * len(tokens)
@@ -231,9 +235,9 @@ class HookOverlay:
         if not any(accent):  # no usable focus: use the longest word so the hook always has an accent
             best = max(range(len(tokens)), key=lambda i: len(_norm(tokens[i])))
             accent[best] = True
-        max_w = W - 120
+        max_w = CFG.get('HOOK_MAX_W') or (W - 120)
         chosen = None
-        for size in range(92, 39, -4):
+        for size in range(CFG.get('HOOK_MAX_SIZE', 92), 39, -4):
             font = ImageFont.truetype(fp, size) if fp else ImageFont.load_default()
             space = size * 0.30
             wid = [font.getlength(t) for t in tokens]
@@ -263,7 +267,7 @@ class HookOverlay:
         glow = Image.new('RGBA', (W, top_h), (0, 0, 0, 0))
         d, gd = ImageDraw.Draw(layer), ImageDraw.Draw(glow)
         block = lh * len(spans)
-        y_first = (top_h - block) / 2 + lh / 2 + 4
+        y_first = (top_h - block) / 2 + lh / 2 + 4 + CFG.get('HOOK_Y_OFFSET', 0)
         emo = _emoji_image(emoji, int(size * 1.0)) if emoji else None
         for li, (a, b) in enumerate(spans):
             last = li == len(spans) - 1
@@ -299,3 +303,81 @@ def fade_out(frame, black, t, total):
     if t <= start:
         return frame
     return Image.blend(frame, black, smoother((t - start) / FADE_OUT_SECONDS))
+
+
+# ----------------------------------------------------------------------------- background layout + motion
+def _line_groups(img):
+    """Row ranges (first, last) of the pale-yellow horizontal lines drawn across the background."""
+    w, h = img.size
+    px = img.load()
+    xs = range(0, w, 3)
+    need = 0.85 * len(xs)
+    rows = []
+    for y in range(h):
+        n = 0
+        for x in xs:
+            r, g, b = px[x, y]
+            if r >= 235 and g >= 230 and b >= 150:
+                n += 1
+        if n >= need:
+            rows.append(y)
+    groups = []
+    for y in rows:
+        if groups and y == groups[-1][1] + 1:
+            groups[-1][1] = y
+        else:
+            groups.append([y, y])
+    return [tuple(g) for g in groups if g[1] - g[0] >= 1]
+
+
+def load_layout(w, h, path, log_fn=None):
+    """Full-screen background with a square picture window marked by two lines. None = keep the old layout."""
+    if not os.path.exists(path):
+        return None
+    try:
+        src = Image.open(path).convert('RGB')
+        groups = _line_groups(src)
+        if len(groups) != 2:
+            raise ValueError('expected 2 boundary lines, found %d' % len(groups))
+        (t0, t1), (b0, b1) = groups
+        scale = max(w / float(src.width), h / float(src.height))
+        bg = src.resize((int(round(src.width * scale)), int(round(src.height * scale))), Image.LANCZOS)
+        left = max(0, (bg.width - w) // 2)
+        bg = bg.crop((left, 0, left + w, h))             # keep the top, trim the bottom if the image is taller
+        inner_top = int(math.ceil((t1 + 2) * scale))
+        inner_bot = int(math.floor((b0 - 1) * scale))
+        inner_h = inner_bot - inner_top
+        if inner_h < w:
+            raise ValueError('picture window %dpx is smaller than the %dpx square' % (inner_h, w))
+        lay = {'bg': bg, 'sq_top': inner_top + (inner_h - w) // 2, 'sq_h': w, 'hook_h': int(math.floor(t0 * scale))}
+        if log_fn:
+            log_fn('background layout: square %dx%d at y=%d, hook area 0-%d (window %d-%d)' %
+                   (w, w, lay['sq_top'], lay['hook_h'], inner_top, inner_bot))
+        return lay
+    except Exception as e:  # noqa
+        if log_fn:
+            log_fn('background layout skipped, using the old layout:', str(e)[:150])
+        return None
+
+
+def set_layout(lay):
+    """Hook above the square, captions inside the square near its bottom."""
+    if not lay:
+        return
+    CFG.update(HOOK_H=lay['hook_h'], HOOK_MAX_W=CFG['W'] - 340, HOOK_MAX_SIZE=80, HOOK_Y_OFFSET=14,
+               CAP_LAST_Y=lay['sq_top'] + lay['sq_h'] - 150)
+
+
+def slow_plan(plan, amp=None):
+    """Same motion, less travel: each zoom/pan range is shrunk around its middle so images drift more gently."""
+    amp = MOTION_AMOUNT if amp is None else amp
+    z0, z1, fx0, fx1, fy0, fy1 = plan
+
+    def shrink(a, b):
+        m = (a + b) / 2.0
+        return m + (a - m) * amp, m + (b - m) * amp
+
+    z0, z1 = shrink(z0, z1)
+    fx0, fx1 = shrink(fx0, fx1)
+    fy0, fy1 = shrink(fy0, fy1)
+    return max(1.0, z0), max(1.0, z1), fx0, fx1, fy0, fy1

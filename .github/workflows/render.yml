@@ -22,7 +22,7 @@ jobs:
           cache: pip
 
       - name: Install ffmpeg
-        run: sudo apt-get update -y && sudo apt-get install -y ffmpeg
+        run: sudo apt-get update -y && sudo apt-get install -y ffmpeg fonts-noto-color-emoji
 
       - name: Install Python packages
         run: pip install -r requirements.txt gradio_client

@@ -29,12 +29,13 @@ from concurrent.futures import ThreadPoolExecutor
 
 import requests
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
+import render_v2_overlay as ov
 
 W, H = 1080, 1920
 FPS = 30
 CANVAS_W, CANVAS_H = 1242, 2208          # source canvas is larger than the frame so zoom never upscales
 IMG_TOP, IMG_H = 200, 1350      # picture window: black bar above (200 px), black bar below (370 px) that holds the captions
-XFADE = 0.35                    # seconds: crossfade with a small zoom between scenes
+XFADE = 0.5                    # seconds: crossfade with a small zoom between scenes
 MOTIONS = ['pan_right', 'pan_left', 'slide_up', 'slide_down', 'zoom_in', 'zoom_out', 'focus']
 CAPTION_FONTS = [
     ('LuckiestGuy-Regular.ttf', 'https://raw.githubusercontent.com/google/fonts/main/ofl/luckiestguy/LuckiestGuy-Regular.ttf'),
@@ -750,16 +751,20 @@ def render_video(canvases, bounds, captions, total, audio_path, out_path):
             k += 1
         pic = None
         if k + 1 < n and t > bounds[k + 1] - half:
-            p = ease((t - (bounds[k + 1] - half)) / XFADE)
+            p = ov.smoother((t - (bounds[k + 1] - half)) / XFADE)
             pic = Image.blend(view(k, t, 1 + 0.07 * p), view(k + 1, t, 1 + 0.07 * (1 - p)), p)
         elif k > 0 and t < bounds[k] + half:
-            p = ease((t - (bounds[k] - half)) / XFADE)
+            p = ov.smoother((t - (bounds[k] - half)) / XFADE)
             pic = Image.blend(view(k - 1, t, 1 + 0.07 * p), view(k, t, 1 + 0.07 * (1 - p)), p)
         else:
             pic = view(k, t)
         frame = black.copy()
         frame.paste(pic, (0, IMG_TOP))
+        hook = ov.STATE.get('hook')
+        if hook is not None:
+            hook.draw(frame)
         captions.draw(frame, t)
+        frame = ov.fade_out(frame, black, t, total)
         proc.stdin.write(frame.tobytes())
     proc.stdin.close()
     if proc.wait() != 0:
@@ -845,7 +850,9 @@ def main():
         mix_audio(voice, music_path, total, mixed)
 
         out_path = os.path.join(OUT, "video.mp4")
-        render_video(canvases, bounds, CaptionTrack(words), total, mixed, out_path)
+        ov.configure(W, H, IMG_TOP, IMG_H, ensure_caption_font, log, CAPTION_COLORS, HERE)
+        ov.STATE['hook'] = ov.HookOverlay(payload.get('hook'), payload.get('title', ''))
+        render_video(canvases, bounds, ov.CaptionTrack(words), total, mixed, out_path)
         size = os.path.getsize(out_path) / 1e6
         log(f"video done {total:.1f}s {size:.1f}MB")
 

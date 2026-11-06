@@ -36,6 +36,9 @@ FPS = 30
 CANVAS_W, CANVAS_H = 1242, 2208          # source canvas is larger than the frame so zoom never upscales
 IMG_TOP, IMG_H = 200, 1350      # picture window: black bar above (200 px), black bar below (370 px) that holds the captions
 XFADE = 0.5                    # seconds: crossfade with a small zoom between scenes
+GEN_W, GEN_H = 720, 1280                # size asked from the image providers
+COLAB_W, COLAB_H = 768, 1344
+GEN_COMPOSITION = 'vertical 9:16'        # wording used in the image prompt prefix
 MOTIONS = ['pan_right', 'pan_left', 'slide_up', 'slide_down', 'zoom_in', 'zoom_out', 'focus']
 CAPTION_FONTS = [
     ('LuckiestGuy-Regular.ttf', 'https://raw.githubusercontent.com/google/fonts/main/ofl/luckiestguy/LuckiestGuy-Regular.ttf'),
@@ -264,7 +267,7 @@ def img_hf(prompt, **_):
     from huggingface_hub import InferenceClient
     client = InferenceClient(api_key=os.environ["HF_TOKEN"])
     model = os.environ.get("HF_IMAGE_MODEL", "black-forest-labs/FLUX.1-schnell")
-    return client.text_to_image(prompt, model=model, width=720, height=1280)
+    return client.text_to_image(prompt, model=model, width=GEN_W, height=GEN_H)
 
 
 def cf_accounts():
@@ -344,7 +347,7 @@ def img_colab(prompt, compact=None, **_):
     url = get_colab_url()
     if not url:
         raise RuntimeError("Colab URL not set")
-    r = requests.post(url + "/generate", json={"prompt": compact or prompt, "width": 768, "height": 1344,
+    r = requests.post(url + "/generate", json={"prompt": compact or prompt, "width": COLAB_W, "height": COLAB_H,
                                                 "token": os.environ.get("COLAB_TOKEN", "")}, timeout=240)
     if r.status_code != 200:
         raise RuntimeError(f"Colab HTTP {r.status_code}: {r.text[:200]}")
@@ -371,7 +374,7 @@ _poll_lock = threading.Lock()
 def img_pollinations(prompt, **_):
     """Free fallback that needs no key. One request at a time, retried a few times."""
     url = ('https://image.pollinations.ai/prompt/' + requests.utils.quote(prompt[:1500]) +
-           '?width=720&height=1280&model=flux&nologo=true&private=true&seed=' + str(random.randint(1, 999999)))
+           '?width=' + str(GEN_W) + '&height=' + str(GEN_H) + '&model=flux&nologo=true&private=true&seed=' + str(random.randint(1, 999999)))
     last = ''
     with _poll_lock:
         for i in range(4):
@@ -440,7 +443,7 @@ def img_hfspace(prompt, **_):
             job = None
             try:
                 client = hf_client(label, tok, space)
-                job = client.submit(prompt=prompt[:1500], seed=0, randomize_seed=True, width=720, height=1280,
+                job = client.submit(prompt=prompt[:1500], seed=0, randomize_seed=True, width=GEN_W, height=GEN_H,
                                     num_inference_steps=4, api_name='/infer')
                 res = job.result(timeout=200)
                 path = res[0] if isinstance(res, (list, tuple)) else res
@@ -517,7 +520,7 @@ def generate_image(idx, prompt, compact, order):
 
 def make_images(scenes, style_look, style_name, order):
     prefix = (f"{style_look} Same recurring main character design and the same color palette in every image, "
-              f"no text, no letters, no watermark, vertical 9:16 composition. Scene: ")
+              f"no text, no letters, no watermark, {GEN_COMPOSITION} composition. Scene: ")
     jobs = []
     for i, s in enumerate(scenes):
         full = prefix + s["image_prompt"]
@@ -705,15 +708,15 @@ def motion_plan(kind):
 
 def view_frame(canvas, plan, u, extra=1.0):
     """The picture window (W x IMG_H) at motion progress u (0..1). extra is the small zoom used during the crossfade."""
-    z0, z1, fx0, fx1, fy0, fy1 = plan
-    e = ease(u)
+    z0, z1, fx0, fx1, fy0, fy1 = ov.slow_plan(plan)
+    e = 0.5 * u + 0.5 * ease(u)
     z = (z0 + (z1 - z0) * e) * extra
     fx = fx0 + (fx1 - fx0) * e
     fy = fy0 + (fy1 - fy0) * e
     k = canvas.width / float(W)
     vw, vh = W / z, IMG_H / z
     cx = vw / 2 + fx * (W - vw)
-    cy = vh / 2 + fy * (H - vh)
+    cy = vh / 2 + fy * (canvas.height / k - vh)
     box = (max(0.0, (cx - vw / 2) * k), max(0.0, (cy - vh / 2) * k),
            min(float(canvas.width), (cx + vw / 2) * k), min(float(canvas.height), (cy + vh / 2) * k))
     return canvas.resize((W, IMG_H), Image.BICUBIC, box=box)
@@ -758,7 +761,7 @@ def render_video(canvases, bounds, captions, total, audio_path, out_path):
             pic = Image.blend(view(k - 1, t, 1 + 0.07 * p), view(k, t, 1 + 0.07 * (1 - p)), p)
         else:
             pic = view(k, t)
-        frame = black.copy()
+        frame = (ov.STATE['layout']['bg'].copy() if ov.STATE.get('layout') else black.copy())
         frame.paste(pic, (0, IMG_TOP))
         hook = ov.STATE.get('hook')
         if hook is not None:
@@ -814,6 +817,14 @@ def callback(url, body):
 
 # ----------------------------------------------------------------------------- main
 def main():
+    global IMG_TOP, IMG_H, CANVAS_W, CANVAS_H, GEN_W, GEN_H, COLAB_W, COLAB_H, GEN_COMPOSITION
+    lay = ov.load_layout(W, H, os.path.join(HERE, 'assets', 'reel_background.png'), log)
+    ov.STATE['layout'] = lay
+    if lay:
+        IMG_TOP, IMG_H = lay['sq_top'], lay['sq_h']
+        CANVAS_W, CANVAS_H = 1242, 1242
+        GEN_W, GEN_H, COLAB_W, COLAB_H = 1024, 1024, 1024, 1024
+        GEN_COMPOSITION = 'square 1:1'
     payload = json.loads(os.environ["PAYLOAD"])
     cb = payload.get("callback_url", "")
     if "--notify-failure" in sys.argv:
@@ -851,6 +862,7 @@ def main():
 
         out_path = os.path.join(OUT, "video.mp4")
         ov.configure(W, H, IMG_TOP, IMG_H, ensure_caption_font, log, CAPTION_COLORS, HERE)
+        ov.set_layout(ov.STATE.get('layout'))
         ov.STATE['hook'] = ov.HookOverlay(payload.get('hook'), payload.get('title', ''))
         render_video(canvases, bounds, ov.CaptionTrack(words), total, mixed, out_path)
         size = os.path.getsize(out_path) / 1e6

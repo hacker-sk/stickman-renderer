@@ -29,9 +29,13 @@ from concurrent.futures import ThreadPoolExecutor
 
 import requests
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
+import render_hindi_overlay as hov
 
 W, H = 1080, 1920
 FPS = 30
+GEN_W, GEN_H = 720, 1280          # size asked from the image providers (1024 x 1024 with the square layout)
+COLAB_W, COLAB_H = 768, 1344
+GEN_COMPOSITION = 'vertical 9:16'
 CANVAS_W, CANVAS_H = 1242, 2208          # source canvas is larger than the frame so zoom never upscales
 TRANSITIONS = {}   # name: seconds. Only the short cross-dissolve
 WORK = os.environ.get("WORK_DIR", "work")
@@ -662,7 +666,7 @@ def img_hf(prompt, **_):
     from huggingface_hub import InferenceClient
     client = InferenceClient(api_key=os.environ["HF_TOKEN"])
     model = os.environ.get("HF_IMAGE_MODEL", "black-forest-labs/FLUX.1-schnell")
-    return client.text_to_image(prompt, model=model, width=720, height=1280)
+    return client.text_to_image(prompt, model=model, width=GEN_W, height=GEN_H)
 
 
 def cf_accounts():
@@ -742,7 +746,7 @@ def img_colab(prompt, compact=None, **_):
     url = get_colab_url()
     if not url:
         raise RuntimeError("Colab URL not set")
-    r = requests.post(url + "/generate", json={"prompt": compact or prompt, "width": 768, "height": 1344,
+    r = requests.post(url + "/generate", json={"prompt": compact or prompt, "width": COLAB_W, "height": COLAB_H,
                                                 "token": os.environ.get("COLAB_TOKEN", "")}, timeout=240)
     if r.status_code != 200:
         raise RuntimeError(f"Colab HTTP {r.status_code}: {r.text[:200]}")
@@ -769,7 +773,7 @@ _poll_lock = threading.Lock()
 def img_pollinations(prompt, **_):
     """Free fallback that needs no key. One request at a time, retried a few times."""
     url = ('https://image.pollinations.ai/prompt/' + requests.utils.quote(prompt[:1500]) +
-           '?width=720&height=1280&model=flux&nologo=true&private=true&seed=' + str(random.randint(1, 999999)))
+           '?width=' + str(GEN_W) + '&height=' + str(GEN_H) + '&model=flux&nologo=true&private=true&seed=' + str(random.randint(1, 999999)))
     last = ''
     with _poll_lock:
         for i in range(4):
@@ -838,7 +842,7 @@ def img_hfspace(prompt, **_):
             job = None
             try:
                 client = hf_client(label, tok, space)
-                job = client.submit(prompt=prompt[:1500], seed=0, randomize_seed=True, width=720, height=1280,
+                job = client.submit(prompt=prompt[:1500], seed=0, randomize_seed=True, width=GEN_W, height=GEN_H,
                                     num_inference_steps=4, api_name='/infer')
                 res = job.result(timeout=200)
                 path = res[0] if isinstance(res, (list, tuple)) else res
@@ -915,7 +919,7 @@ def generate_image(idx, prompt, compact, order):
 
 def make_images(scenes, style_look, style_name, order):
     prefix = (f"{style_look} Keep a recurring character or place the same only where the story needs it, and show new subjects and surroundings otherwise. "
-              f"no text, no letters, no watermark, vertical 9:16 composition. Scene: ")
+              f"no text, no letters, no watermark, {GEN_COMPOSITION} composition. Scene: ")
     jobs = []
     for i, s in enumerate(scenes):
         full = prefix + s["image_prompt"]
@@ -939,7 +943,7 @@ def make_images(scenes, style_look, style_name, order):
             results[i] = results[nearest]
             used[i] = "reused"
             log(f"image {i + 1}: reused image {nearest + 1}")
-    return [fit_vertical(r) for r in results], used
+    return [(hov.fit_square(r) if hov.STATE.get("layout") else fit_vertical(r)) for r in results], used
 
 
 # ----------------------------------------------------------------------------- music
@@ -1057,6 +1061,12 @@ def transition_frame(kind, old, new, p):
 
 
 def render_video(canvases, bounds, captions, total, audio_path, out_path):
+    if hov.STATE.get("layout"):
+        return hov.render_video(canvases, bounds, captions, total, audio_path, out_path, FPS, log)
+    return render_video_legacy(canvases, bounds, captions, total, audio_path, out_path)
+
+
+def render_video_legacy(canvases, bounds, captions, total, audio_path, out_path):
     nframes = int(math.ceil(total * FPS))
     cmd = ['ffmpeg', '-y', '-loglevel', 'error', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-s', str(W) + 'x' + str(H),
            '-r', str(FPS), '-i', '-', '-i', audio_path, '-map', '0:v', '-map', '1:a',
@@ -1122,6 +1132,7 @@ def callback(url, body):
 
 # ----------------------------------------------------------------------------- main
 def main():
+    global GEN_W, GEN_H, COLAB_W, COLAB_H, GEN_COMPOSITION
     payload = json.loads(os.environ["PAYLOAD"])
     cb = payload.get("callback_url", "")
     if "--notify-failure" in sys.argv:
@@ -1129,6 +1140,9 @@ def main():
         return
     try:
         scenes = payload["scenes"]
+        if hov.setup(payload, W, H, HERE, ensure_font, log):
+            GEN_W, GEN_H, COLAB_W, COLAB_H = 1024, 1024, 1024, 1024
+            GEN_COMPOSITION = 'square 1:1'
         narration = " ".join(s["narration"].strip() for s in scenes)
         script_words = narration.split()
         order = [x.strip() for x in (os.environ.get('HINDI_IMAGE_ORDER') or 'hfspace,cloudflare,pollinations').split(',') if x.strip()]
@@ -1168,7 +1182,7 @@ def main():
         mix_audio(voice, music_path, total, mixed)
 
         out_path = os.path.join(OUT, "video.mp4")
-        render_video(canvases, bounds, CaptionTrack(words), total, mixed, out_path)
+        render_video(canvases, bounds, (hov.CaptionTrack(words) if hov.STATE.get("layout") else CaptionTrack(words)), total, mixed, out_path)
         size = os.path.getsize(out_path) / 1e6
         log(f"video done {total:.1f}s {size:.1f}MB")
 

@@ -699,7 +699,7 @@ def img_cloudflare(prompt, **_):
         label, acct, tok = live[(turn + k) % len(live)]
         url = f'https://api.cloudflare.com/client/v4/accounts/{acct}/ai/run/@cf/black-forest-labs/flux-1-schnell'
         r = requests.post(url, headers={'Authorization': f'Bearer {tok}'},
-                          json={'prompt': prompt[:2000], 'steps': 4}, timeout=120)
+                          json={'prompt': prompt[:2000], 'steps': 6}, timeout=120)
         if r.status_code in (401, 403, 429):
             body = r.text[:300]
             low = body.lower()
@@ -843,7 +843,7 @@ def img_hfspace(prompt, **_):
             try:
                 client = hf_client(label, tok, space)
                 job = client.submit(prompt=prompt[:1500], seed=0, randomize_seed=True, width=GEN_W, height=GEN_H,
-                                    num_inference_steps=4, api_name='/infer')
+                                    num_inference_steps=6, api_name='/infer')
                 res = job.result(timeout=200)
                 path = res[0] if isinstance(res, (list, tuple)) else res
                 if isinstance(path, dict):

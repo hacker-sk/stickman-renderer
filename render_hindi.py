@@ -918,7 +918,7 @@ def generate_image(idx, prompt, compact, order):
 
 
 def make_images(scenes, style_look, style_name, order):
-    prefix = (f"{style_look} Keep a recurring character or place the same only where the story needs it, and show new subjects and surroundings otherwise. "
+    prefix = (f"{style_look} "
               f"no text, no letters, no watermark, {GEN_COMPOSITION} composition. Scene: ")
     jobs = []
     for i, s in enumerate(scenes):

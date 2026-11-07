@@ -842,7 +842,7 @@ def img_hfspace(prompt, **_):
             job = None
             try:
                 client = hf_client(label, tok, space)
-                job = client.submit(prompt=prompt[:1500], seed=0, randomize_seed=True, width=GEN_W, height=GEN_H,
+                job = client.submit(prompt=prompt[:2000], seed=0, randomize_seed=True, width=GEN_W, height=GEN_H,
                                     num_inference_steps=6, api_name='/infer')
                 res = job.result(timeout=200)
                 path = res[0] if isinstance(res, (list, tuple)) else res
@@ -1145,7 +1145,7 @@ def main():
             GEN_COMPOSITION = 'square 1:1'
         narration = " ".join(s["narration"].strip() for s in scenes)
         script_words = narration.split()
-        order = [x.strip() for x in (os.environ.get('HINDI_IMAGE_ORDER') or 'hfspace,cloudflare,pollinations').split(',') if x.strip()]
+        order = [x.strip() for x in (os.environ.get('HINDI_IMAGE_ORDER') or 'cloudflare,hfspace,pollinations').split(',') if x.strip()]
         log("provider order:", order)
 
         voice = os.path.join(WORK, "voice.wav")

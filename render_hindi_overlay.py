@@ -106,6 +106,7 @@ def load_layout(w, h, path, log_fn=None):
         y0 = int(math.floor(top_l[0] * scale)) - OVERSCAN
         y1 = int(math.ceil((bottom_l[1] + 1) * scale)) + OVERSCAN
         x0, y0, x1, y1 = max(0, x0), max(0, y0), min(w, x1), min(h, y1)
+        x0, x1 = 0, w                                    # full width: the picture band runs edge to edge, no side margins
         if x1 - x0 < w * 0.6 or y1 - y0 < h * 0.3:
             raise ValueError('frame looks wrong: %d,%d to %d,%d' % (x0, y0, x1, y1))
         lay = {'bg': bg, 'box': (x0, y0, x1, y1), 'pw': x1 - x0, 'ph': y1 - y0, 'hook_h': y0}

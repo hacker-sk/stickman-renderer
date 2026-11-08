@@ -266,12 +266,30 @@ class HookOverlay:
 
 
 # ----------------------------------------------------------------------------- captions
+def _font_kind(text):
+    '''Which font a caption word needs: the Devanagari font has no Latin letters, so English words came out as empty boxes.'''
+    has_dev = any(0x0900 <= ord(c) <= 0x097F for c in text)
+    has_lat = any(c.isascii() and c.isalpha() for c in text)
+    if has_lat and has_dev:
+        return 'mixed'
+    return 'latin' if has_lat else 'dev'
+
+
+def _latin_font_path():
+    for p in ('/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf', '/usr/share/fonts/opentype/noto/NotoSans-Bold.ttf',
+              '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf'):
+        if os.path.exists(p):
+            return p
+    return _hook_font_path()
+
+
 class CaptionTrack:
     """Short caption lines (max 3 words) near the bottom of the square. All words are white, the word being spoken
     is in the video's one highlight colour. Every line is fitted inside the picture window, never outside it."""
 
     def __init__(self, words):
         self.fp = CFG['font']()
+        self.fps = {'dev': self.fp, 'latin': _latin_font_path(), 'mixed': _hook_font_path()}   # mixed words use Poppins (has both scripts)
         self.fonts = {}
         self.cache = {}
         self.stroke = 8
@@ -290,18 +308,22 @@ class CaptionTrack:
         self.layout = [self._fit(ch) for ch in self.chunks]
         _log('caption highlight colour for this video:', self.hl)
 
-    def _f(self, size):
-        f = self.fonts.get(size)
+    def _f(self, size, kind='dev'):
+        key = (size, kind)
+        f = self.fonts.get(key)
         if f is None:
-            f = self.fonts[size] = _font(self.fp, size)
+            f = self.fonts[key] = _font(self.fps[kind], size)
         return f
+
+    def _fw(self, size, text):
+        return self._f(size, _font_kind(text))
 
     def _fit(self, ch):
         n = len(ch)
         for size in CAPTION_SIZES:
             f = self._f(size)
             space = f.getlength(' ') * 1.1
-            widths = [f.getlength(w[0]) for w in ch]
+            widths = [self._fw(size, w[0]).getlength(w[0]) for w in ch]
 
             def fits(line):
                 return sum(widths[k] for k in line) + space * (len(line) - 1) <= self.max_w
@@ -316,13 +338,13 @@ class CaptionTrack:
                     return size, space, widths, two
         size = CAPTION_SIZES[-1]
         f = self._f(size)
-        return size, f.getlength(' ') * 1.1, [f.getlength(w[0]) for w in ch], [[k] for k in range(n)]
+        return size, f.getlength(' ') * 1.1, [self._fw(size, w[0]).getlength(w[0]) for w in ch], [[k] for k in range(n)]
 
     def word_img(self, text, color, size):
         key = (text, color, size)
         im = self.cache.get(key)
         if im is None:
-            f = self._f(size)
+            f = self._fw(size, text)
             w = int(f.getlength(text)) + self.pad * 2 + self.stroke
             h = int(size * 1.9) + self.pad * 2
             im = Image.new('RGBA', (w, h), (0, 0, 0, 0))

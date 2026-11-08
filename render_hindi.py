@@ -46,6 +46,8 @@ FONT_URL = "https://raw.githubusercontent.com/google/fonts/main/ofl/poppins/Popp
 MUSIC_FOLDER_ID = os.environ.get("MUSIC_FOLDER_ID", "1BKMv97oqy2UEkhq3jOSp8yy1kzYFZtEl")
 FAKE = os.environ.get("FAKE_MODE") == "1"   # used only for local tests
 
+MAX_VOICE_SECONDS = 178.0   # 3 minute limit for a Short: voice plus the 0.9s tail stays under 180s
+
 os.makedirs(WORK, exist_ok=True)
 os.makedirs(OUT, exist_ok=True)
 
@@ -397,7 +399,7 @@ def make_voice_gemini(text, path):
                     wf.setsampwidth(2)
                     wf.setframerate(24000)
                     wf.writeframes(pcm)
-                fit_voice_length(path, 57.5)
+                fit_voice_length(path, MAX_VOICE_SECONDS - 0.5)
                 EL_ALIGN.clear()
                 log('Gemini voice ' + voice + ' made with ' + model)
                 return
@@ -1148,6 +1150,14 @@ def main():
         callback(cb, {"status": "error", "message": "The GitHub render job failed. Open the run log in GitHub Actions."})
         return
     try:
+        jp = payload.get("job_path")
+        if jp:
+            with open(os.path.join(HERE, jp), "r", encoding="utf-8") as jf:
+                payload = json.load(jf)
+            slim = dict(payload)
+            slim["scenes"] = [{"narration": s.get("narration", "")} for s in payload.get("scenes", [])]
+            os.environ["PAYLOAD"] = json.dumps(slim, ensure_ascii=False)   # voice helpers read the voice settings from here
+            log("loaded job file", jp, "with", len(payload.get("scenes", [])), "scenes")
         scenes = payload["scenes"]
         if hov.setup(payload, W, H, HERE, ensure_font, log):
             GEN_W, GEN_H, COLAB_W, COLAB_H = 1024, 1024, 1024, 1024
@@ -1163,8 +1173,8 @@ def main():
         make_voice(narration, voice)
         dur = audio_duration(voice)
         log(f"voice {dur:.1f}s")
-        if dur > 58:
-            raise RuntimeError(f"Voiceover is {dur:.0f}s, over the 58 second limit")
+        if dur > MAX_VOICE_SECONDS:
+            raise RuntimeError(f"Voiceover is {dur:.0f}s, over the {MAX_VOICE_SECONDS:.0f} second limit")
 
         words = align_words(script_words, dur, voice)
 

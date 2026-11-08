@@ -348,7 +348,7 @@ class CaptionTrack:
             w = int(f.getlength(text)) + self.pad * 2 + self.stroke
             h = int(size * 1.9) + self.pad * 2
             im = Image.new('RGBA', (w, h), (0, 0, 0, 0))
-            ImageDraw.Draw(im).text((self.pad + self.stroke // 2, self.pad), text, font=f, fill=color,
+            ImageDraw.Draw(im).text((self.pad + self.stroke // 2, self.pad + int(size * 1.2)), text, font=f, fill=color, anchor='ls',
                                     stroke_width=self.stroke, stroke_fill=OUTLINE)
             self.cache[key] = im
         return im

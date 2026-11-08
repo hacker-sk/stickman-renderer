@@ -528,8 +528,52 @@ def need_sim(a, b):
     if m <= 2:
         return 1.0
     if m <= 4:
-        return 0.67
-    return 0.6
+        return 0.75
+    return 0.7
+
+
+def wlen(w):
+    '''Speaking weight of a word: its letters, with English (Latin) words counted double because they are spelled out or stretched.'''
+    return max(1, len(w)) * (2 if w.isascii() else 1)
+
+
+def prune_anchors(anchors, sn, lo, hi, heard):
+    '''Drop word matches that imply an impossible speaking speed. A false match makes the captions stick on a word and then jump to catch up.'''
+    n = len(sn)
+    cum = [0]
+    for w in sn:
+        cum.append(cum[-1] + wlen(w))
+    base = max(0.05, hi - lo) / float(cum[-1])
+    pts = [(0, lo, False)] + [(i, float(heard[j][1]), True) for i, j in sorted(anchors.items())] + [(n, hi, False)]
+
+    def bad(a, b):
+        chars = cum[b[0]] - cum[a[0]]
+        if chars < 6:
+            return 0.0
+        dt = b[1] - a[1]
+        if dt <= 0.05:
+            return 99.0
+        ratio = (dt / chars) / base
+        if ratio > 5.0:
+            return ratio
+        if ratio < 0.2:
+            return 1.0 / ratio
+        return 0.0
+
+    while True:
+        worst = None
+        for k in range(1, len(pts) - 1):
+            s = max(bad(pts[k - 1], pts[k]), bad(pts[k], pts[k + 1]))
+            if s > 0 and (worst is None or s > worst[0]):
+                worst = (s, k)
+        if worst is None:
+            break
+        del pts[worst[1]]
+    kept = set(p[0] for p in pts if p[2])
+    removed = len(anchors) - len(kept)
+    if removed:
+        log('word timing: dropped ' + str(removed) + ' matches that implied an impossible speaking speed')
+    return dict((i, j) for i, j in anchors.items() if i in kept)
 
 
 def map_by_chars(script_words, heard, t_lo=None, t_hi=None):
@@ -583,6 +627,7 @@ def map_by_chars(script_words, heard, t_lo=None, t_hi=None):
             j -= 1
     lo = t_lo if t_lo is not None else heard[0][1]
     hi = t_hi if t_hi is not None else heard[-1][2]
+    anchors = prune_anchors(anchors, sn, lo, hi, heard)
     out = [None] * n
     for i, j in anchors.items():
         out[i] = (script_words[i], float(heard[j][1]), float(heard[j][2]))
@@ -598,7 +643,7 @@ def map_by_chars(script_words, heard, t_lo=None, t_hi=None):
         right = out[k][1] if k < n else hi
         if right < left + 0.1 * (k - i):
             right = left + 0.1 * (k - i)
-        weights = [max(1, len(sn[x])) for x in range(i, k)]
+        weights = [wlen(sn[x]) for x in range(i, k)]
         tot = float(sum(weights))
         t = left
         for x, wgt in zip(range(i, k), weights):
@@ -643,7 +688,7 @@ def align_words(script_words, duration, audio_path):
     try:
         heard = whisper_heard(audio_path, ' '.join(script_words))
         log('Whisper heard ' + str(len(heard)) + ' words, mapping the script onto them')
-        return map_by_chars(script_words, heard)
+        return map_by_chars(script_words, heard, 0.0, max(float(duration), float(heard[-1][2])))
     except Exception as e:  # noqa
         log('Using estimated word timing:', str(e)[:150])
         raise RuntimeError('Word-level audio timing failed (Whisper): ' + str(e)[:150])

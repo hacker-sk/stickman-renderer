@@ -918,8 +918,7 @@ def generate_image(idx, prompt, compact, order):
 
 
 def make_images(scenes, style_look, style_name, order):
-    prefix = (f"{style_look} "
-              f"no text, no letters, no watermark, {GEN_COMPOSITION} composition. Scene: ")
+    prefix = (f"{style_look} " if style_look else "")
     jobs = []
     for i, s in enumerate(scenes):
         full = prefix + s["image_prompt"]

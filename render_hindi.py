@@ -494,7 +494,8 @@ def whisper_heard(audio_path, script_text=''):
     from faster_whisper import WhisperModel
     model = WhisperModel(os.environ.get('WHISPER_MODEL', 'medium'), device='cpu', compute_type='int8')
     segs, _ = model.transcribe(audio_path, word_timestamps=True, language='hi', vad_filter=False,
-                               condition_on_previous_text=False, beam_size=5, initial_prompt=(script_text or None))
+                               condition_on_previous_text=False, beam_size=5, initial_prompt=(script_text or None),
+                               no_speech_threshold=None)
     out = []
     for s in segs:
         for w in (s.words or []):

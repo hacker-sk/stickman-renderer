@@ -25,7 +25,7 @@ STATE = {}
 BG_FILE = 'reel_background_hindi.png'
 OVERSCAN = 4                     # px the pictures extend past the outer edge of the frame lines
 CANVAS = 1242                    # square source canvas, larger than the picture window so zoom never upscales
-XFADE = 0.5                      # seconds, crossfade with a small zoom between scenes (same as English)
+XFADE = 0.3                      # seconds, crossfade with a small zoom between scenes (same as English)
 MOTION_AMOUNT = 0.5              # English keeps 0.7 of each zoom/pan travel; Hindi keeps less, so images drift slower
 MOTIONS = ['pan_right', 'pan_left', 'slide_up', 'slide_down', 'zoom_in', 'zoom_out', 'focus']
 HOOK_FONT = ('Poppins-Black.ttf', 'https://raw.githubusercontent.com/google/fonts/main/ofl/poppins/Poppins-Black.ttf')
@@ -335,7 +335,7 @@ class CaptionTrack:
         idx = None
         for i, ch in enumerate(self.chunks):
             nxt = self.chunks[i + 1][0][1] if i + 1 < len(self.chunks) else 1e9
-            if ch[0][1] - 0.02 <= t < min(nxt, ch[-1][2] + 0.25):
+            if ch[0][1] - 0.02 <= t < min(nxt, ch[-1][2] + 0.9):
                 idx = i
                 break
         if idx is None:
@@ -444,6 +444,8 @@ def render_video(canvases, bounds, captions, total, audio_path, out_path, fps, l
     if log_fn:
         log_fn('motions:', [p[0] for p in plans])
     half = XFADE / 2.0
+    shift = half - 0.05                      # the fade starts 0.05 s before the first word of the phrase, never earlier
+    bounds = [bounds[0]] + [x + shift for x in bounds[1:-1]] + [bounds[-1]]
     black = Image.new('RGB', (W, H), (0, 0, 0))
     hook = STATE.get('hook')
 

@@ -36,7 +36,7 @@ OUTLINE = (0, 0, 0)
 # same highlight colours as the English caption palette (yellow, blue); black is skipped because it is invisible here
 HIGHLIGHTS = [(255, 214, 0), (30, 144, 255)]
 CAPTION_SIZES = (88, 80, 72, 64, 56)
-CAPTION_FROM_BOTTOM = 150        # centre of the last caption line, px above the bottom of the picture window (English: 150)
+CAPTION_FROM_BOTTOM = 45        # centre of the last caption line, px above the bottom of the picture window (English: 150)
 
 
 def _log(*a):

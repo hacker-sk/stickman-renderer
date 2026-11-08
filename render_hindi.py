@@ -488,11 +488,11 @@ def el_words(script_words):
         return None
 
 
-def whisper_heard(audio_path):
+def whisper_heard(audio_path, script_text=''):
     from faster_whisper import WhisperModel
-    model = WhisperModel(os.environ.get('WHISPER_MODEL', 'small'), device='cpu', compute_type='int8')
+    model = WhisperModel(os.environ.get('WHISPER_MODEL', 'medium'), device='cpu', compute_type='int8')
     segs, _ = model.transcribe(audio_path, word_timestamps=True, language='hi', vad_filter=False,
-                               condition_on_previous_text=False)
+                               condition_on_previous_text=False, beam_size=5, initial_prompt=(script_text or None))
     out = []
     for s in segs:
         for w in (s.words or []):
@@ -519,6 +519,16 @@ def word_sim(a, b):
     return difflib.SequenceMatcher(None, a, b).ratio()
 
 
+def need_sim(a, b):
+    '''Similarity needed to accept two words as the same word. Short words must match exactly.'''
+    m = min(len(a), len(b))
+    if m <= 2:
+        return 1.0
+    if m <= 4:
+        return 0.67
+    return 0.6
+
+
 def map_by_chars(script_words, heard, t_lo=None, t_hi=None):
     '''Place every script word on the real speech timeline. Words that Whisper actually heard (found by sequence
     alignment) keep their real start and end times, pauses and speaking speed included. Only words Whisper missed
@@ -540,7 +550,7 @@ def map_by_chars(script_words, heard, t_lo=None, t_hi=None):
     for i in range(1, n + 1):
         for j in range(1, m + 1):
             s = word_sim(sn[i - 1], hn[j - 1])
-            best = score[i - 1][j - 1] + ((s - 0.5) if s >= 0.5 else -0.6)
+            best = score[i - 1][j - 1] + ((s - 0.5) if s >= need_sim(sn[i - 1], hn[j - 1]) else -0.6)
             b = 0
             up = score[i - 1][j] + GAP
             if up > best:
@@ -560,7 +570,7 @@ def map_by_chars(script_words, heard, t_lo=None, t_hi=None):
         else:
             b = 1 if i > 0 else 2
         if b == 0:
-            if word_sim(sn[i - 1], hn[j - 1]) >= 0.5:
+            if word_sim(sn[i - 1], hn[j - 1]) >= need_sim(sn[i - 1], hn[j - 1]):
                 anchors[i - 1] = j - 1
             i -= 1
             j -= 1
@@ -596,7 +606,7 @@ def map_by_chars(script_words, heard, t_lo=None, t_hi=None):
     fixed = []
     prev = lo
     for w, a, b in out:
-        a = max(a, prev)
+        a = max(a, prev + (0.12 if fixed else 0.0))
         b = max(b, a + 0.1)
         fixed.append((w, a, b))
         prev = a
@@ -628,7 +638,7 @@ def align_words(script_words, duration, audio_path):
         log('ElevenLabs word timing ok (' + str(len(got)) + ' words)')
         return got
     try:
-        heard = whisper_heard(audio_path)
+        heard = whisper_heard(audio_path, ' '.join(script_words))
         log('Whisper heard ' + str(len(heard)) + ' words, mapping the script onto them')
         return map_by_chars(script_words, heard)
     except Exception as e:  # noqa
@@ -1167,8 +1177,8 @@ def main():
         sil = find_silences(voice)
         bounds = [0.0]
         for wi in first_words:
-            b = words[min(wi, len(words) - 1)][1] - 0.04
-            cand = [m for m in sil if abs(m - b) <= 0.35]
+            b = words[min(wi, len(words) - 1)][1]
+            cand = [m for m in sil if abs(m - b) <= 0.1]
             if cand:
                 b = min(cand, key=lambda m: abs(m - b))
             bounds.append(max(bounds[-1] + 0.8, b))

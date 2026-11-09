@@ -22,10 +22,11 @@ import render_v2_overlay as ov   # English reference, only smoother() and fade_o
 CFG = {}
 STATE = {}
 
-BG_FILE = 'reel_background_hindi.png'      # old background, only used if none of the new ones can be loaded
-# New backgrounds, one is picked at random for every video. File in assets/ -> outer frame lines
-# (left, top, right, bottom) in pixels of the source image (941 x 1672).
+BG_FILE = 'reel_background_hindi.png'      # the old background, now one of the 5 random choices
+# The old background plus 4 new ones, one is picked at random for every video. File in assets/ -> outer frame lines
+# (left, top, right, bottom) in pixels of the source image (941 x 1672); None = detect the frame automatically.
 BG_CHOICES = {
+    BG_FILE: None,
     'reel_bg_knight.png': (35, 352, 905, 1194),
     'reel_bg_boy_sepia.png': (37, 381, 903, 1175),
     'reel_bg_boy_red.png': (37, 366, 902, 1200),
@@ -526,8 +527,6 @@ def setup(payload, w, h, here, font_fn, log_fn):
             if log_fn:
                 log_fn('background picked:', name)
             break
-    if not lay:                                          # none of the new files usable: old background as before
-        lay = load_layout(w, h, os.path.join(here, 'assets', BG_FILE), log_fn)
     STATE['layout'] = lay
     STATE['hook'] = None
     if not lay:

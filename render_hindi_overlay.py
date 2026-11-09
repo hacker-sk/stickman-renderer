@@ -22,7 +22,15 @@ import render_v2_overlay as ov   # English reference, only smoother() and fade_o
 CFG = {}
 STATE = {}
 
-BG_FILE = 'reel_background_hindi.png'
+BG_FILE = 'reel_background_hindi.png'      # old background, only used if none of the new ones can be loaded
+# New backgrounds, one is picked at random for every video. File in assets/ -> outer frame lines
+# (left, top, right, bottom) in pixels of the source image (941 x 1672).
+BG_CHOICES = {
+    'reel_bg_knight.png': (35, 352, 905, 1194),
+    'reel_bg_boy_sepia.png': (37, 381, 903, 1175),
+    'reel_bg_boy_red.png': (37, 366, 902, 1200),
+    'reel_bg_blindfold_blue.png': (36, 368, 905, 1171),
+}
 OVERSCAN = 4                     # px the pictures extend past the outer edge of the frame lines
 CANVAS = 1242                    # square source canvas, larger than the picture window so zoom never upscales
 XFADE = 0.3                      # seconds, crossfade with a small zoom between scenes (same as English)
@@ -88,7 +96,7 @@ def _find_frame(img):
     return cg[0], rg[0], cg[1], rg[1]
 
 
-def load_layout(w, h, path, log_fn=None):
+def load_layout(w, h, path, log_fn=None, frame=None):
     """Full-screen background plus the picture window. None means: keep the old layout."""
     if not os.path.exists(path):
         if log_fn:
@@ -96,7 +104,10 @@ def load_layout(w, h, path, log_fn=None):
         return None
     try:
         src = Image.open(path).convert('RGB')
-        left_l, top_l, right_l, bottom_l = _find_frame(src)
+        if frame:                                        # known frame position of the new backgrounds, no detection needed
+            left_l, top_l, right_l, bottom_l = (frame[0],) * 2, (frame[1],) * 2, (frame[2],) * 2, (frame[3],) * 2
+        else:
+            left_l, top_l, right_l, bottom_l = _find_frame(src)
         scale = max(w / float(src.width), h / float(src.height))
         bg = src.resize((int(round(src.width * scale)), int(round(src.height * scale))), Image.LANCZOS)
         off_x = max(0, (bg.width - w) // 2)
@@ -506,7 +517,17 @@ def render_video(canvases, bounds, captions, total, audio_path, out_path, fps, l
 def setup(payload, w, h, here, font_fn, log_fn):
     """Load the background layout and build the hook. Returns the layout, or None to keep the old layout."""
     CFG.update(W=w, H=h, HERE=here, font=font_fn, log=log_fn)
-    lay = load_layout(w, h, os.path.join(here, 'assets', BG_FILE), log_fn)
+    lay = None
+    names = list(BG_CHOICES)
+    random.shuffle(names)                                # a different background for every video
+    for name in names:
+        lay = load_layout(w, h, os.path.join(here, 'assets', name), log_fn, BG_CHOICES[name])
+        if lay:
+            if log_fn:
+                log_fn('background picked:', name)
+            break
+    if not lay:                                          # none of the new files usable: old background as before
+        lay = load_layout(w, h, os.path.join(here, 'assets', BG_FILE), log_fn)
     STATE['layout'] = lay
     STATE['hook'] = None
     if not lay:

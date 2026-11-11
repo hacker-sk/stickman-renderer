@@ -490,7 +490,38 @@ def el_words(script_words):
         return None
 
 
+def whisperx_heard(audio_path, script_text=''):
+    # WhisperX large-v3-turbo (int8, CPU) hears the voice, then the Hindi wav2vec2 forced aligner gives word timestamps
+    import whisperx
+    device = 'cpu'
+    audio = whisperx.load_audio(audio_path)
+    opts = {'condition_on_previous_text': False, 'beam_size': 5, 'initial_prompt': (script_text or None)}
+    model = whisperx.load_model(os.environ.get('WHISPERX_MODEL', 'large-v3-turbo'), device, compute_type='int8', language='hi', asr_options=opts)
+    result = model.transcribe(audio, batch_size=8, language='hi')
+    del model
+    align_model, meta = whisperx.load_align_model(language_code='hi', device=device, model_name=os.environ.get('WHISPERX_ALIGN_MODEL', 'theainerd/Wav2Vec2-large-xlsr-hindi'))
+    aligned = whisperx.align(result['segments'], align_model, meta, audio, device, return_char_alignments=False)
+    out = []
+    for w in aligned.get('word_segments') or []:
+        t = str(w.get('word') or '').strip()
+        if t and w.get('start') is not None and w.get('end') is not None:
+            out.append((t, float(w['start']), float(w['end'])))
+    if len(out) < 3:
+        raise RuntimeError('WhisperX alignment returned too few words')
+    return out
+
+
 def whisper_heard(audio_path, script_text=''):
+    try:
+        out = whisperx_heard(audio_path, script_text)
+        log('WhisperX large-v3-turbo with the Hindi aligner heard ' + str(len(out)) + ' words')
+        return out
+    except Exception as e:  # noqa
+        log('WhisperX failed, using faster-whisper instead:', str(e)[:200])
+        return whisper_heard_fw(audio_path, script_text)
+
+
+def whisper_heard_fw(audio_path, script_text=''):
     from faster_whisper import WhisperModel
     model = WhisperModel(os.environ.get('WHISPER_MODEL', 'medium'), device='cpu', compute_type='int8')
     segs, _ = model.transcribe(audio_path, word_timestamps=True, language='hi', vad_filter=False,

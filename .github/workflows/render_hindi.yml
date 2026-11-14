@@ -27,7 +27,7 @@ jobs:
       - name: Install Python packages
         run: |
           pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
-          pip install -r requirements.txt gradio_client
+          pip install -r requirements.txt gradio_client google-auth
 
       - name: Cache Whisper model
         uses: actions/cache@v4
@@ -69,6 +69,8 @@ jobs:
           COLAB_URL: ${{ secrets.COLAB_URL }}
           COLAB_URL_SOURCE: ${{ secrets.COLAB_URL_SOURCE }}
           COLAB_TOKEN: ${{ secrets.COLAB_TOKEN }}
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
           IMAGE_PROVIDER_ORDER: ${{ vars.IMAGE_PROVIDER_ORDER }}
         run: python render_hindi.py
 

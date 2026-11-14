@@ -412,20 +412,93 @@ def make_voice_gemini(text, path):
     raise RuntimeError(last)
 
 
+def vertex_tts_pieces(text, limit=3000):
+    '''Cloud TTS takes at most 4000 bytes of text per request, so a long script is cut at sentence ends.'''
+    sentences = [s for s in re.split(r'(?<=[।.!?]) +', text.strip()) if s]
+    pieces = []
+    cur = ''
+    for s in sentences:
+        cand = (cur + ' ' + s) if cur else s
+        if cur and len(cand.encode('utf-8')) > limit:
+            pieces.append(cur)
+            cur = s
+        else:
+            cur = cand
+    if cur:
+        pieces.append(cur)
+    out = []
+    for p in pieces:
+        while len(p.encode('utf-8')) > limit:
+            cut = p.rfind(' ', 0, limit // 4)
+            if cut < 20:
+                cut = limit // 4
+            out.append(p[:cut])
+            p = p[cut:].strip()
+        if p:
+            out.append(p)
+    return out
+
+
+def make_voice_vertex(text, path):
+    '''Google Cloud Text-to-Speech (Gemini-TTS) with the service account. There are no word timestamps, so Whisper times the words as before.'''
+    if FAKE:
+        raise RuntimeError('Vertex TTS is not used in the local test mode')
+    if not vertex_info():
+        raise RuntimeError('GCP_SA_KEY not set')
+    payload = json.loads(os.environ['PAYLOAD'])
+    voice = str(payload.get('vertex_voice') or os.environ.get('VERTEX_TTS_VOICE') or '').strip()
+    if not voice:
+        gv = str(payload.get('gemini_voice') or '')
+        voice = gv if (gv and gv != 'designed' and not gv.startswith('voice_')) else 'Puck'
+    style = str(payload.get('vertex_style') or payload.get('gemini_style') or os.environ.get('VERTEX_TTS_STYLE') or '')
+    lang = os.environ.get('VERTEX_TTS_LANG') or 'hi-IN'
+    models = [m.strip() for m in (os.environ.get('VERTEX_TTS_MODELS') or 'gemini-2.5-flash-tts,gemini-2.5-pro-tts').split(',') if m.strip()]
+    nwords = len(text.split())
+    last = ''
+    for model in models:
+        try:
+            pcm = b''
+            for piece in vertex_tts_pieces(text):
+                body = {'input': {'text': piece}, 'voice': {'languageCode': lang, 'name': voice, 'modelName': model},
+                        'audioConfig': {'audioEncoding': 'LINEAR16', 'sampleRateHertz': 24000}}
+                if style:
+                    body['input']['prompt'] = style[:3500]
+                data = vertex_post('https://texttospeech.googleapis.com/v1/text:synthesize', body, 'Vertex TTS (' + model + ')', timeout=300)
+                raw = base64.b64decode(data.get('audioContent') or '')
+                if not raw:
+                    raise RuntimeError('Vertex TTS returned no audio')
+                pcm += pcm_from_audio(raw)
+            secs = len(pcm) / 48000.0
+            if secs < nwords * 0.18:
+                raise RuntimeError('Vertex audio too short (' + str(round(secs, 1)) + 's for ' + str(nwords) + ' words)')
+            with wave.open(path, 'wb') as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(24000)
+                wf.writeframes(pcm)
+            fit_voice_length(path, MAX_VOICE_SECONDS - 0.5)
+            EL_ALIGN.clear()
+            log('Vertex TTS voice ' + voice + ' made with ' + model)
+            return
+        except Exception as e:  # noqa
+            last = str(e)
+            log('Vertex TTS failed (' + model + '): ' + last[:160])
+    raise RuntimeError(last or 'Vertex TTS failed')
+
+
 def make_voice(text, path):
-    try:
-        make_voice_gemini(text, path)
-        log('voice made by Gemini')
-        return
-    except Exception as e:  # noqa
-        log('Gemini voice failed, trying ElevenLabs:', str(e)[:200])
-    try:
-        make_voice_elevenlabs(text, path)
-        log('voice made by ElevenLabs')
-    except Exception as e:  # noqa
-        log('ElevenLabs failed, switching to Fish Audio:', str(e)[:200])
-        make_voice_fish(text, path)
-        log('voice made by Fish Audio')
+    '''Voice order: Vertex AI TTS, then ElevenLabs, then Gemini, then Fish Audio.'''
+    last = None
+    for name, fn in (('Vertex AI', make_voice_vertex), ('ElevenLabs', make_voice_elevenlabs),
+                     ('Gemini', make_voice_gemini), ('Fish Audio', make_voice_fish)):
+        try:
+            fn(text, path)
+            log('voice made by ' + name)
+            return
+        except Exception as e:  # noqa
+            last = e
+            log(name + ' voice failed:', str(e)[:200])
+    raise last
 
 
 def audio_duration(path):
@@ -970,7 +1043,114 @@ def img_hfspace(prompt, **_):
     raise RuntimeError('Hugging Face queue was busy or failed, falling back to the next image source')
 
 
-PROVIDERS = {'hf': img_hf, 'hfspace': img_hfspace, 'cloudflare': img_cloudflare, 'colab': img_colab, 'pollinations': img_pollinations}
+# ----------------------------------------------------------------------------- Google Cloud Vertex AI (primary for images and voice)
+# Needs the GCP_SA_KEY secret (service account JSON, or the same JSON base64 encoded). GCP_PROJECT_ID is optional:
+# the project_id inside the key is used when it is empty. Without the key, or when Vertex fails, the providers below are the fallback.
+_VTX = {'tok': '', 'exp': 0.0, 'info': None}
+_VTX_LOCK = threading.Lock()
+_VTX_RETRY = (429, 500, 502, 503, 504)
+
+
+def vertex_info():
+    raw = (os.environ.get('GCP_SA_KEY') or '').strip()
+    if not raw:
+        return None
+    if _VTX['info'] is None:
+        try:
+            if not raw.startswith('{'):
+                raw = base64.b64decode(raw).decode('utf-8')
+            _VTX['info'] = json.loads(raw)
+        except Exception as e:  # noqa
+            raise RuntimeError('GCP_SA_KEY is not valid service account JSON: ' + str(e)[:80])
+    return _VTX['info']
+
+
+def vertex_project():
+    pid = (os.environ.get('GCP_PROJECT_ID') or '').strip()
+    if pid:
+        return pid
+    return str((vertex_info() or {}).get('project_id') or '')
+
+
+def vertex_token(force=False):
+    info = vertex_info()
+    if not info:
+        raise RuntimeError('GCP_SA_KEY not set')
+    with _VTX_LOCK:
+        if not force and _VTX['tok'] and _VTX['exp'] - time.time() > 300:
+            return _VTX['tok']
+        from google.oauth2 import service_account
+        from google.auth.transport.requests import Request
+        creds = service_account.Credentials.from_service_account_info(info, scopes=['https://www.googleapis.com/auth/cloud-platform'])
+        creds.refresh(Request())
+        _VTX['tok'] = creds.token
+        _VTX['exp'] = time.time() + 3000
+        return _VTX['tok']
+
+
+def vertex_post(url, body, what, timeout=180, tries=4):
+    '''POST JSON to a Google Cloud API with the service account token. Rate limits and server errors are retried, an expired token is refreshed once.'''
+    last = ''
+    refreshed = False
+    for i in range(tries):
+        r = requests.post(url, headers={'Authorization': 'Bearer ' + vertex_token(), 'Content-Type': 'application/json'},
+                          data=json.dumps(body), timeout=timeout)
+        if r.status_code == 200:
+            return r.json()
+        if r.status_code == 401 and not refreshed:
+            refreshed = True
+            vertex_token(force=True)
+            continue
+        last = what + ' HTTP ' + str(r.status_code) + ': ' + r.text[:200]
+        if r.status_code in _VTX_RETRY:
+            if i < tries - 1:
+                log(what + ' busy (HTTP ' + str(r.status_code) + '), retrying')
+                time.sleep(4 * (i + 1) + random.random() * 2)
+                continue
+            raise RuntimeError(what + ' is rate limited or unavailable right now')
+        raise RuntimeError(last)
+    raise RuntimeError(last or (what + ' failed'))
+
+
+def img_vertex(prompt, **_):
+    '''Nano Banana (Gemini image model) on Vertex AI. 9:16 portrait, or 1:1 when the square layout is on.'''
+    if not vertex_info():
+        raise RuntimeError('Vertex AI key not set')
+    project = vertex_project()
+    if not project:
+        raise RuntimeError('Vertex AI project id not set')
+    loc = (os.environ.get('VERTEX_IMAGE_LOCATION') or 'global').strip()
+    host = 'aiplatform.googleapis.com' if loc == 'global' else loc + '-aiplatform.googleapis.com'
+    models = [m.strip() for m in (os.environ.get('VERTEX_IMAGE_MODELS') or 'gemini-2.5-flash-image').split(',') if m.strip()]
+    ratio = '1:1' if GEN_COMPOSITION.startswith('square') else '9:16'
+    body = {'contents': [{'role': 'user', 'parts': [{'text': prompt[:6000]}]}],
+            'generationConfig': {'responseModalities': ['IMAGE'], 'imageConfig': {'aspectRatio': ratio}}}
+    last = ''
+    for model in models:
+        url = 'https://' + host + '/v1/projects/' + project + '/locations/' + loc + '/publishers/google/models/' + model + ':generateContent'
+        try:
+            data = vertex_post(url, body, 'Vertex image (' + model + ')', timeout=180)
+        except Exception as e:  # noqa
+            last = str(e)
+            log('Vertex image model failed:', model, last[:150])
+            continue
+        for cand in data.get('candidates') or []:
+            for p in ((cand.get('content') or {}).get('parts')) or []:
+                inl = p.get('inlineData') or p.get('inline_data')
+                if inl and inl.get('data'):
+                    log('vertex ' + model + ' made an image')
+                    return Image.open(io.BytesIO(base64.b64decode(inl['data'])))
+        why = ''
+        if data.get('promptFeedback'):
+            why = json.dumps(data['promptFeedback'])[:120]
+        elif data.get('candidates'):
+            why = str(data['candidates'][0].get('finishReason') or '')
+        last = 'Vertex image (' + model + ') returned no image ' + why
+        log(last)
+    raise RuntimeError(last or 'Vertex image failed')
+
+
+PROVIDERS = {'vertex': img_vertex, 'hf': img_hf, 'hfspace': img_hfspace, 'cloudflare': img_cloudflare, 'colab': img_colab, 'pollinations': img_pollinations}
 
 
 def generate_image(idx, prompt, compact, order):
@@ -1242,6 +1422,13 @@ def main():
         narration = " ".join(s["narration"].strip() for s in scenes)
         script_words = narration.split()
         order = [x.strip() for x in (os.environ.get('HINDI_IMAGE_ORDER') or 'cloudflare,hfspace,pollinations').split(',') if x.strip()]
+        try:
+            use_vertex = bool(vertex_info()) and os.environ.get('VERTEX_IMAGES', '1') != '0'
+        except Exception as e:  # noqa
+            log('Vertex AI key problem, using the old image providers:', str(e)[:120])
+            use_vertex = False
+        if use_vertex and 'vertex' not in order:
+            order.insert(0, 'vertex')
         log("provider order:", order)
 
         voice = os.path.join(WORK, "voice.wav")

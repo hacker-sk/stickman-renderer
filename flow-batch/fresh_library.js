@@ -1,6 +1,7 @@
 // One-time step per Flow run: create a brand-new Library (the + next to "Library" in Flow's sidebar) right after the
-// project loads, before anything else, and give it a unique name (run-<time>-<runid>). Returns false when the sidebar is not
-// there yet (not logged in), so the caller can try again after the next page load; true once the step has been handled
+// project loads, before anything else, and give it a unique name (run-<time>-<runid>). Then OPEN that collection so the
+// prompt bar belongs to it and generations are saved inside it (not under "All media"). Returns false when the sidebar is
+// not there yet (not logged in), so the caller can try again after the next page load; true once the step has been handled
 // (even if it could not be confirmed).
 const fs = require("fs");
 const path = require("path");
@@ -134,9 +135,73 @@ async function ensureFreshLibrary(page, h) {
       }
     }
   }
+
+  // Open the new collection so the prompt bar (and therefore every generation) belongs to it instead of "All media".
+  // Creating + naming it does NOT switch the view; without this click Flow saves images under All media.
+  // Layout seen in debug/fresh-library.png: the new run-... row is the FIRST row under Library in the left sidebar, and the
+  // same name also appears on a big tile in the All media grid (main area) - so only ever click inside the sidebar (x < 320).
+  // The active view is the row with the highlighted pill: "All media" at load. When the collection is open that pill leaves it.
+  let opened = false;
+  if (named && confirmed) {
+    const urlBefore = page.url();
+    // Sidebar row for the new collection: leaf element holding the name, left 320 px, below the Library row.
+    const findRow = () => page.evaluate((a) => {
+      let best = null;
+      for (const el of document.querySelectorAll("*")) {
+        if (el.children.length || !(el.textContent || "").trim().startsWith(a.name)) continue;
+        const b = el.getBoundingClientRect();
+        if (!b.width || !b.height || b.x > 320 || b.y <= a.y) continue;
+        if (!best || b.y < best.y) best = { x: b.x, y: b.y, w: b.width, h: b.height };
+      }
+      return best;
+    }, { name, y: lb ? lb.y : 0 }).catch(() => null);
+    // true while the "All media" sidebar row still has its highlight (a background the plain "Images" row does not have).
+    const allMediaActive = () => page.evaluate(() => {
+      const bgOf = (txt) => {
+        for (const el of document.querySelectorAll("*")) {
+          if (el.children.length || (el.textContent || "").trim() !== txt) continue;
+          const r = el.getBoundingClientRect();
+          if (!r.width || r.x > 320) continue;
+          for (let n = el, i = 0; n && i < 6; n = n.parentElement, i++) {
+            const c = getComputedStyle(n).backgroundColor;
+            const nb = n.getBoundingClientRect();
+            if (c && c !== "transparent" && !/rgba\(\s*0,\s*0,\s*0,\s*0\s*\)/.test(c) && nb.width > 120) return c;
+          }
+          return "none";
+        }
+        return null;
+      };
+      const all = bgOf("All media"), img = bgOf("Images");
+      if (all === null) return null;           // sidebar not readable
+      return all !== "none" && all !== img;     // highlighted and different from a normal row
+    }).catch(() => null);
+
+    const wasActive = await allMediaActive();
+    for (let attempt = 1; attempt <= 3 && !opened; attempt++) {
+      const row = await findRow();
+      if (!row) { console.log("Fresh library: sidebar row for " + name + " not found (attempt " + attempt + ")"); await h.pause(600, 1200); continue; }
+      await h.moveTo(page, row.x + Math.min(row.w / 2, 90) + h.rand(-3, 3), row.y + row.h / 2 + h.rand(-2, 2));
+      await h.pause(80, 250);
+      await page.mouse.down();
+      await h.pause(40, 110);
+      await page.mouse.up();
+      for (let i = 0; i < 10 && !opened; i++) {
+        await h.pause(400, 700);
+        const urlChanged = page.url() !== urlBefore;
+        const active = await allMediaActive();
+        if (urlChanged || (wasActive && active === false)) {
+          opened = true;
+          console.log("Fresh library: collection opened (" + (urlChanged ? "url changed" : "All media no longer highlighted") + ")");
+        }
+      }
+    }
+    await h.pause(800, 1500);
+  }
+
   await page.screenshot({ path: path.join(DEBUG_DIR, "fresh-library.png") }).catch(() => {});
-  console.log("Fresh library step done | name: " + (named ? name : "default") + " | confirmed on page: " + confirmed);
+  console.log("Fresh library step done | name: " + (named ? name : "default") + " | confirmed on page: " + confirmed + " | opened: " + opened);
   if (named && !confirmed) console.log("::warning::Fresh library name not seen on the page - check debug/fresh-library.png");
+  if (named && confirmed && !opened) console.log("::warning::Fresh library: could not open the collection, images will land in All media - check debug/fresh-library.png");
   return true;
 }
 

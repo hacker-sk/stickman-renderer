@@ -1,59 +1,59 @@
 {
-  "title": "रिश्ते में हर बहस जीतना ज़रूरी नहीं",
-  "description": "रिश्ते की सबसे बड़ी गलती है सुनने से पहले जवाब देना। हर बहस जीतने की ज़रूरत नहीं होती, कई बार चुप रहकर समझ लेना सबसे बड़ा प्यार होता है। आज किसी अपने की बात बिना टोके पूरी सुनो। इसे उसे भेजो जिससे आप सबसे ज़्यादा प्यार करते हो।",
+  "title": "सबसे गहरा घाव अपनों से मिलता है",
+  "description": "अपमान से नहीं, उस इंसान की बेरुखी से दुख होता है जिसे हमने अपने दिल में जगह दी। अजनबी की उपेक्षा नहीं चुभती, अपने की बेरुखी चुभती है। जहां प्रेम और विश्वास होता है, वहीं सबसे गहरे घाव बनते हैं। इसे उसे भेजो जिसने आपकी कीमत नहीं समझी।",
   "mood": "emotional",
   "hashtags": [
+    "#अपने",
+    "#दर्द",
     "#रिश्ते",
-    "#प्यार",
-    "#रिलेशनशिपएडवाइस",
     "#हिंदीक्वोट्स",
     "#ज़िंदगीकासच",
-    "#कपलगोल्स",
     "#भावनाएं",
+    "#विश्वास",
     "#Reels"
   ],
   "tags": [
+    "अपनों से दुख",
     "रिश्ते",
-    "रिलेशनशिप एडवाइस",
-    "प्यार",
-    "सुनना",
-    "relationship advice",
-    "love",
+    "दर्द",
+    "विश्वास",
+    "हिंदी क्वोट्स",
+    "emotional quotes",
     "stickman",
     "reels"
   ],
   "hook": {
-    "line": "रिश्ते में हर बहस जीतना ज़रूरी नहीं",
-    "focus": "बहस"
+    "line": "सबसे गहरा घाव अपनों से मिलता है",
+    "focus": "अपनों"
   },
   "art_style": "sketchbook_doodle",
-  "voice_style": "Warm, gentle and sincere young male reel narrator: a calm steady medium pace, slightly softer and heavier on the lines about not listening and not needing to win, tender and quiet on the line about silence showing love, and ending warmly and directly, like advice to a close friend.",
+  "voice_style": "Soft, heavy-hearted and sincere male reel narrator: a slow, calm, steady pace, quiet and tender on the lines about giving someone a place in the heart, slightly lower and pained on the lines about the unkindness of loved ones and the deepest wounds, and ending softly with a sad, reflective weight, like a truth spoken to oneself at night.",
   "random_bg": false,
   "bgm": true,
   "scenes": [
     {
-      "narration": "रिश्ते में सबसे बड़ी गलती यही होती है,",
-      "image_prompt": "Medium view of a stick-figure man with a round white head, simple expressive face, thin black stick limbs, a bright orange shirt and navy trousers and a stick-figure woman with a round white head, simple expressive face, thin black stick limbs, a long black braid, a mustard-yellow kurta and a maroon dupatta sitting at the two opposite ends of a long wooden bench in a quiet evening park, both turned slightly away from each other, a wide gap of empty bench between them, his arms crossed and eyes on the ground, her chin resting on her hand and a sad distant look, fallen golden leaves, a lamp post and bare trees, soft dusk light, loose pencil hatching. Hand-drawn 2D storybook illustration in a charming sketchbook-doodle style, simple expressive stick-figure characters with bold irregular black ink outlines, detailed natural environments, loose hand-drawn linework, watercolor and colored-pencil textures, subtle paper grain, warm earthy tones, golden-hour cinematic lighting, soft atmospheric shading, highly detailed backgrounds, consistent character design, no text, logos, or watermarks."
+      "narration": "मनुष्य को सबसे अधिक दुख अपमान से नहीं होता,",
+      "image_prompt": "Medium view of a stick-figure man with a round white head, simple expressive face, thin black stick limbs, a bright orange shirt and navy trousers standing calmly on a busy evening street while a few small stick-figure strangers around him shout and point with tiny scribbled angry speech bubbles that bounce harmlessly off his shoulders, his face tired but unmoved, a lamp post, shopfronts and a dusky sky, loose pencil hatching. Hand-drawn 2D storybook illustration in a charming sketchbook-doodle style, simple expressive stick-figure characters with bold irregular black ink outlines, detailed natural environments, loose hand-drawn linework, watercolor and colored-pencil textures, subtle paper grain, warm earthy tones, golden-hour cinematic lighting, soft atmospheric shading, highly detailed backgrounds, consistent character design, no text, logos, or watermarks."
     },
     {
-      "narration": "कि हम सामने वाले से सुनना कम और जवाब देना ज़्यादा चाहते हैं।",
-      "image_prompt": "Close view inside a small home living room of a stick-figure woman with a round white head, simple expressive face, thin black stick limbs, a long black braid, a mustard-yellow kurta and a maroon dupatta speaking with hurt, teary eyes and one hand on her chest, a small scribbled speech bubble floating from her, while a stick-figure man with a round white head, simple expressive face, thin black stick limbs, a bright orange shirt and navy trousers beside her is already opening his mouth to reply, a much bigger angry scribbled thought cloud growing over his head and swallowing her small bubble, a sofa, a window with curtains and a small clock on the wall, warm lamp light, loose pencil hatching. Hand-drawn 2D storybook illustration in a charming sketchbook-doodle style, simple expressive stick-figure characters with bold irregular black ink outlines, detailed natural environments, loose hand-drawn linework, watercolor and colored-pencil textures, subtle paper grain, warm earthy tones, golden-hour cinematic lighting, soft atmospheric shading, highly detailed backgrounds, consistent character design, no text, logos, or watermarks."
+      "narration": "बल्कि इस बात से होता है कि उसने जिन लोगों को अपने हृदय में स्थान दिया, वे उसकी कीमत समझ ही नहीं पाए।",
+      "image_prompt": "Wide view at night outside a small warm house where a stick-figure man with a round white head, simple expressive face, thin black stick limbs, a bright orange shirt and navy trousers stands in the cold courtyard holding a glowing red heart in both open hands toward a lit window, inside the window a stick-figure family with round white heads, thin black stick limbs, in mustard, maroon and green clothes laughs at a dinner table and does not notice him, his eyes sad and hopeful, a few fallen leaves, a hanging lantern, loose pencil hatching. Hand-drawn 2D storybook illustration in a charming sketchbook-doodle style, simple expressive stick-figure characters with bold irregular black ink outlines, detailed natural environments, loose hand-drawn linework, watercolor and colored-pencil textures, subtle paper grain, warm earthy tones, golden-hour cinematic lighting, soft atmospheric shading, highly detailed backgrounds, consistent character design, no text, logos, or watermarks."
     },
     {
-      "narration": "हर बहस जीतने की ज़रूरत नहीं होती।",
-      "image_prompt": "Wide view of a small dining room where a stick-figure man with a round white head, simple expressive face, thin black stick limbs, a bright orange shirt and navy trousers stands proudly holding a shiny golden trophy cup high in the air with a smug grin, while at the far end of the table a stick-figure woman with a round white head, simple expressive face, thin black stick limbs, a long black braid, a mustard-yellow kurta and a maroon dupatta sits alone with her head bowed and a lonely sad face, a small cracked heart-shaped clay lamp lying broken in the middle of the table between them, two cold tea cups, a hanging bulb, evening window light, loose pencil hatching. Hand-drawn 2D storybook illustration in a charming sketchbook-doodle style, simple expressive stick-figure characters with bold irregular black ink outlines, detailed natural environments, loose hand-drawn linework, watercolor and colored-pencil textures, subtle paper grain, warm earthy tones, golden-hour cinematic lighting, soft atmospheric shading, highly detailed backgrounds, consistent character design, no text, logos, or watermarks."
+      "narration": "अजनबी की उपेक्षा उतनी नहीं चुभती जितनी अपने की बेरुखी चुभती है।",
+      "image_prompt": "Wide view of a quiet park path split in two halves: on the left a stick-figure stranger with a round white head and thin black stick limbs in a grey coat walks past without a glance and the stick-figure man with a round white head, thin black stick limbs, a bright orange shirt and navy trousers only gives a small shrug, on the right his close friend, a stick-figure with a round white head, thin black stick limbs and a mustard-yellow shirt, turns his back on him coldly and the man clutches his chest with a large cracked red heart glowing through his shirt, his face full of hurt, fallen golden leaves, a wooden bench, soft dusk light, loose pencil hatching. Hand-drawn 2D storybook illustration in a charming sketchbook-doodle style, simple expressive stick-figure characters with bold irregular black ink outlines, detailed natural environments, loose hand-drawn linework, watercolor and colored-pencil textures, subtle paper grain, warm earthy tones, golden-hour cinematic lighting, soft atmospheric shading, highly detailed backgrounds, consistent character design, no text, logos, or watermarks."
     },
     {
-      "narration": "कई बार चुप रहकर समझ लेना, हज़ार शब्दों से ज़्यादा प्यार दिखाता है।",
-      "image_prompt": "Medium view of a stick-figure man with a round white head, simple expressive face, thin black stick limbs, a bright orange shirt and navy trousers gently placing a soft woollen shawl over the shoulders of a stick-figure woman with a round white head, simple expressive face, thin black stick limbs, a long black braid, a mustard-yellow kurta and a maroon dupatta, both sitting on a small house doorstep on a cool night with two steaming chai cups beside them, she leans her head softly on his shoulder with closed eyes and a peaceful smile, a glowing lantern, a sky full of stars, a faint warm heart-shaped glow between them, no words, quiet mood, loose pencil hatching. Hand-drawn 2D storybook illustration in a charming sketchbook-doodle style, simple expressive stick-figure characters with bold irregular black ink outlines, detailed natural environments, loose hand-drawn linework, watercolor and colored-pencil textures, subtle paper grain, warm earthy tones, golden-hour cinematic lighting, soft atmospheric shading, highly detailed backgrounds, consistent character design, no text, logos, or watermarks."
+      "narration": "क्योंकि जहां अपेक्षा नहीं होती, वहां चोट भी नहीं होती।",
+      "image_prompt": "Medium view of a stick-figure man with a round white head, simple expressive face, thin black stick limbs, a bright orange shirt and navy trousers standing calm and empty-handed in a wide quiet field with a lone tree, a stick-figure stranger in a grey coat walking away in the distance, small scribbled arrows flying toward the man and dissolving into thin air before touching him, no heart in his hands, a calm neutral face, a pale grey-gold sky, tall grass, loose pencil hatching. Hand-drawn 2D storybook illustration in a charming sketchbook-doodle style, simple expressive stick-figure characters with bold irregular black ink outlines, detailed natural environments, loose hand-drawn linework, watercolor and colored-pencil textures, subtle paper grain, warm earthy tones, golden-hour cinematic lighting, soft atmospheric shading, highly detailed backgrounds, consistent character design, no text, logos, or watermarks."
     },
     {
-      "narration": "जो तुम्हें सुनता है, वही तुम्हारा अपना है।",
-      "image_prompt": "Close view in a cosy home kitchen of a stick-figure woman with a round white head, simple expressive face, thin black stick limbs, a long black braid, a mustard-yellow kurta and a maroon dupatta talking happily with bright eyes, tiny glowing hearts and flowers floating from her words, while a stick-figure man with a round white head, simple expressive face, thin black stick limbs, a bright orange shirt and navy trousers leans toward her with one hand cupped behind his ear and a warm attentive smile, the floating hearts flowing into his chest, steel utensils on a shelf, a window with a flowerpot, warm morning light, loose pencil hatching. Hand-drawn 2D storybook illustration in a charming sketchbook-doodle style, simple expressive stick-figure characters with bold irregular black ink outlines, detailed natural environments, loose hand-drawn linework, watercolor and colored-pencil textures, subtle paper grain, warm earthy tones, golden-hour cinematic lighting, soft atmospheric shading, highly detailed backgrounds, consistent character design, no text, logos, or watermarks."
+      "narration": "लेकिन जहां प्रेम, विश्वास और अपनापन होता है, वहीं सबसे गहरे घाव बनते हैं।",
+      "image_prompt": "Close view in a cosy home living room of a stick-figure man with a round white head, simple expressive face, thin black stick limbs, a bright orange shirt and navy trousers reaching out with a warm trusting hand toward a stick-figure loved one with a round white head, thin black stick limbs and a maroon dupatta who looks away at a phone with a cold face, a large red heart on the man's chest with deep glowing cracks and scratches spreading across it, tears in his eyes, a family photo frame on the wall, a sofa, a table lamp, soft warm lamp light, loose pencil hatching. Hand-drawn 2D storybook illustration in a charming sketchbook-doodle style, simple expressive stick-figure characters with bold irregular black ink outlines, detailed natural environments, loose hand-drawn linework, watercolor and colored-pencil textures, subtle paper grain, warm earthy tones, golden-hour cinematic lighting, soft atmospheric shading, highly detailed backgrounds, consistent character design, no text, logos, or watermarks."
     },
     {
-      "narration": "इसलिए आज किसी अपने की बात, बिना टोके पूरी सुनो।",
-      "image_prompt": "Wide cinematic view of a warm living room in the evening where a stick-figure man with a round white head, simple expressive face, thin black stick limbs, a bright orange shirt and navy trousers sits cross-legged on a rug facing a stick-figure woman with a round white head, simple expressive face, thin black stick limbs, a long black braid, a mustard-yellow kurta and a maroon dupatta, their knees almost touching, she is talking with a relieved teary smile and he is listening with a soft open face, a mobile phone lying face down and forgotten on a side table, two cups of tea, a glowing table lamp, string lights on the wall, a golden sunset glow through the window, a feeling of closeness, loose pencil hatching. Hand-drawn 2D storybook illustration in a charming sketchbook-doodle style, simple expressive stick-figure characters with bold irregular black ink outlines, detailed natural environments, loose hand-drawn linework, watercolor and colored-pencil textures, subtle paper grain, warm earthy tones, golden-hour cinematic lighting, soft atmospheric shading, highly detailed backgrounds, consistent character design, no text, logos, or watermarks."
+      "narration": "यही कारण है कि कई लोग संसार से नहीं, अपने ही लोगों से हार जाते हैं।",
+      "image_prompt": "Wide cinematic view of a long empty road at night where a stick-figure man with a round white head, simple expressive face, thin black stick limbs, a bright orange shirt and navy trousers sits alone on the ground with his head bowed and shoulders low, a toppled chess king piece lying beside him, far behind him the faint small silhouettes of stick-figure loved ones standing together under a distant warm window glow and not looking back, a single lantern beside him, a large pale moon, scattered stars, bare trees, loose pencil hatching. Hand-drawn 2D storybook illustration in a charming sketchbook-doodle style, simple expressive stick-figure characters with bold irregular black ink outlines, detailed natural environments, loose hand-drawn linework, watercolor and colored-pencil textures, subtle paper grain, warm earthy tones, golden-hour cinematic lighting, soft atmospheric shading, highly detailed backgrounds, consistent character design, no text, logos, or watermarks."
     }
   ]
 }

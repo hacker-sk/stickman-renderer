@@ -26,6 +26,124 @@ fs.mkdirSync(DEBUG_DIR, { recursive: true });
 
 const NL = String.fromCharCode(10);
 let TRACKER = null; // prompt -> Flow media UUID tracker (set once the prompts are loaded)
+let CONTEXT = null; // the browser context (set once it is launched)
+const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+
+// ---------------------------------------------------------------------------------------------------------------------------------
+// Download names.
+// In a normal Chrome the ZAPI Flow extension decides the file name itself (the first words of the prompt, so "[s01] ..." gives a file
+// that starts with [s01]). Under Playwright every download is intercepted and Playwright only reports the name the SERVER suggests, which
+// for Flow images is "unnamed.webp" - the extension's own name is lost, so no image could be matched to its scene.
+// Fix, in layers (each one is optional, none can stop the run):
+//   1. zdlPatch() is put in front of the extension's service worker (before the extension runs) and into every extension page. It records
+//      what the extension asks Chrome to download (chrome.downloads.download: url + filename) and which name it suggests in
+//      chrome.downloads.onDeterminingFilename. Those records are read back here and matched to each Playwright download by URL.
+//   2. Any media UUID found in the download URL is added to the saved file name (the media tracker matches UUID -> scene).
+//   3. collectImages() can still give scenes by download ORDER when nothing else matched (see orderScenes there).
+// Everything seen is written to debug/download-names.json so a run always shows which layer worked.
+// ---------------------------------------------------------------------------------------------------------------------------------
+function zdlPatch() {
+  try {
+    var g = typeof self !== "undefined" ? self : globalThis;
+    if (!g.chrome || !g.chrome.downloads || g.__zdlPatched) return;
+    g.__zdlPatched = true;
+    g.__zdl = g.__zdl || [];
+    var rec = function (r) {
+      try {
+        r.t = Date.now();
+        g.__zdl.push(r);
+        if (typeof g.__zapiDl === "function") g.__zapiDl(r);
+      } catch (e) {}
+    };
+    var d = g.chrome.downloads;
+    var od = d.download;
+    if (typeof od === "function") {
+      d.download = function (o, cb) {
+        try { rec({ kind: "download", url: String((o && o.url) || ""), filename: String((o && o.filename) || "") }); } catch (e) {}
+        return od.apply(this, arguments);
+      };
+    }
+    var ev = d.onDeterminingFilename;
+    if (ev && typeof ev.addListener === "function") {
+      var oa = ev.addListener;
+      ev.addListener = function (fn) {
+        var a = Array.prototype.slice.call(arguments);
+        if (typeof fn === "function") {
+          a[0] = function (item, suggest) {
+            var s2 = function (s) {
+              try { rec({ kind: "suggest", url: String((item && (item.url || item.finalUrl)) || ""), filename: String((s && s.filename) || "") }); } catch (e) {}
+              return suggest.apply(this, arguments);
+            };
+            return fn.call(this, item, s2);
+          };
+        }
+        return oa.apply(this, a);
+      };
+    }
+  } catch (e) {}
+}
+
+// Puts zdlPatch() in front of the extension's service worker file. Runs before the browser starts; safe to run twice.
+function patchExtensionWorker() {
+  try {
+    const mf = JSON.parse(fs.readFileSync(path.join(EXT_DIR, "manifest.json"), "utf8"));
+    const rel = mf.background && mf.background.service_worker;
+    if (!rel) { console.log("Download-name capture: the extension has no service worker file, page hook only"); return; }
+    const file = path.join(EXT_DIR, rel);
+    const src = fs.readFileSync(file, "utf8");
+    if (src.indexOf("__zdlPatched") !== -1) { console.log("Download-name capture: service worker already patched (" + rel + ")"); return; }
+    fs.writeFileSync(file, "(" + zdlPatch.toString() + ")();" + NL + src);
+    console.log("Download-name capture: installed in front of " + rel);
+  } catch (e) {
+    console.log("Download-name capture NOT installed in the service worker:", String(e && e.message).slice(0, 140));
+  }
+}
+
+const DL_LOG = [];            // what the extension asked Chrome to download: { t, kind, url, filename, claimed }
+const DL_KEYS = new Set();
+const DL_NAMES = [];          // one row per Playwright download (written to debug/download-names.json)
+function addRec(r) {
+  if (!r) return;
+  const key = [r.t, r.kind, r.url, r.filename].join("|");
+  if (DL_KEYS.has(key)) return;
+  DL_KEYS.add(key);
+  DL_LOG.push({ t: r.t, kind: r.kind, url: String(r.url || ""), filename: String(r.filename || ""), claimed: false });
+}
+async function pullSwLog() {
+  if (!CONTEXT) return;
+  for (const sw of CONTEXT.serviceWorkers()) {
+    try {
+      const rows = await sw.evaluate(() => (globalThis.__zdl || []).slice());
+      for (const r of rows) addRec(r);
+    } catch (e) {}
+  }
+}
+function normUrl(u) { try { const x = new URL(u); return x.origin + x.pathname; } catch (e) { return String(u).split("?")[0]; } }
+// The records of ONE download: same URL (exact, else without the query string). The suggested name wins over the requested one.
+function pickRecord(url) {
+  let m = DL_LOG.filter((r) => !r.claimed && r.url === url);
+  if (!m.length) { const n = normUrl(url); m = DL_LOG.filter((r) => !r.claimed && normUrl(r.url) === n); }
+  if (!m.length) return null;
+  m.forEach((r) => { r.claimed = true; });
+  const named = m.filter((r) => r.filename);
+  const sug = named.filter((r) => r.kind === "suggest");
+  return (sug.length ? sug : named).slice(-1)[0] || m[m.length - 1];
+}
+async function recoverName(url) {
+  const end = Date.now() + 3000;
+  for (;;) {
+    await pullSwLog();
+    const rec = pickRecord(url);
+    if (rec) return rec;
+    if (Date.now() >= end) return null;
+    await new Promise((r) => setTimeout(r, 300));
+  }
+}
+function cleanName(n) {
+  let b = String(n || "").replace(/\\/g, "/").split("/").pop();
+  b = b.replace(/[<>:"|?*\u0000-\u001f]/g, "_").trim();
+  return b.slice(0, 120);
+}
 
 // Flow settings: config.json defaults, overridden by FLOW_MODEL / FLOW_ASPECT / FLOW_COUNT (set from workflow inputs).
 const WANT = Object.assign({ agent: "off", model: "Nano Banana Lite", aspect: "portrait", count: 1 }, cfg.flowSettings || {});
@@ -73,6 +191,14 @@ async function snapshot(pg, name) {
   return { url: safeUrl(pg.url()), title: await pg.title().catch(() => '') };
 }
 function writeEvidence() { fs.writeFileSync(path.join(DEBUG_DIR, 'flow-network.json'), JSON.stringify(EVID, null, 2)); }
+function writeDownloadNames() {
+  try {
+    fs.writeFileSync(path.join(DEBUG_DIR, 'download-names.json'), JSON.stringify({
+      downloads: DL_NAMES,
+      extension_calls: DL_LOG.map((r) => ({ t: r.t, kind: r.kind, url: safeUrl(r.url), filename: r.filename, claimed: r.claimed }))
+    }, null, 2));
+  } catch (e) {}
+}
 function parseQueue(text, prompts) {
   const lines = text.split(NL).map((s) => s.trim());
   const start = lines.findIndex((l) => l.toUpperCase() === 'QUEUE');
@@ -203,10 +329,14 @@ function clearDir(dir) {
 
 // Collect complete, valid images from every place Chrome may have written them (subfolders included). Safe to call more than once.
 // Images with the requested shape go to downloads/final; wrong-shaped ones go to downloads/rejected and the rest of the batch is kept.
-// When the prompt->media mapping is available, each image whose filename carries a known Flow media UUID is saved as scene_NN.<ext>
-// (NN = prompt number); any other accepted image is saved as unmatched_<n> so it can never be mistaken for a scene.
+// When the prompt->media mapping is available, each image is matched to its scene: first by a Flow media UUID in the file name, then by
+// the [sNN] scene tag in the file name (see flow_match.js); it is saved as scene_NN.<ext> (NN = prompt number). Any other accepted image
+// is saved as unmatched_<n> so it can never be mistaken for a scene.
+// Last resort, only when `orderScenes` is given: the scenes (1-based prompt numbers, ascending) whose prompts finished DONE in the first
+// and only attempt. If exactly as many images are still unmatched as there are such scenes still without an image, the images are given
+// to those scenes in download order (the extension queue is strictly one prompt after the other). Any other count: nothing is guessed.
 // Without a mapping the old behaviour applies (descriptive names, capture timestamp prefix removed).
-function collectImages() {
+function collectImages(orderScenes) {
   clearDir(FINAL_DIR);
   clearDir(REJECTED_DIR);
   const files = [];
@@ -214,14 +344,10 @@ function collectImages() {
   listFiles(path.join(os.homedir(), "Downloads"), files);
   files.sort((a, b) => fs.statSync(a).mtimeMs - fs.statSync(b).mtimeMs);
   const seen = new Set();
-  const usedFinal = new Set();
-  const usedRejected = new Set();
-  const items = [];
+  const recs = [];
   const skipped = [];
   const sceneFile = {};
   const mapped = TRACKER ? TRACKER.hasMapping() : false;
-  let accepted = 0;
-  let rejected = 0;
   for (const full of files) {
     const f = path.basename(full);
     if (/\.(crdownload|tmp|part)$/i.test(f)) { skipped.push(f + " (incomplete)"); continue; }
@@ -233,28 +359,54 @@ function collectImages() {
     seen.add(hash);
     const size = imageSize(buf);
     const ok = matchesAspect(size, ASP);
-    let name;
-    let scene = null;
-    if (ok) {
-      accepted += 1;
-      const hit = mapped ? TRACKER.matchFile(f) : null;
+    const r = { full, f, buf, ext, size, ok, scene: null, how: null };
+    if (ok && mapped) {
+      const hit = TRACKER.matchFile(f);
       if (hit && !sceneFile[hit.index]) {
-        name = "scene_" + String(hit.index).padStart(2, "0") + ext;
-        scene = hit.index;
-        sceneFile[hit.index] = { file: "final/" + name, uuid: hit.uuid };
-      } else if (mapped) {
-        name = "unmatched_" + uniqueName(f, ext, usedFinal);
-      } else {
-        name = uniqueName(f, ext, usedFinal);
+        r.scene = hit.index;
+        r.how = String(hit.uuid).indexOf("tag:") === 0 ? "tag" : "uuid";
+        sceneFile[hit.index] = { file: null, uuid: hit.uuid };
       }
-      fs.copyFileSync(full, path.join(FINAL_DIR, name));
+    }
+    recs.push(r);
+  }
+
+  if (mapped && Array.isArray(orderScenes) && orderScenes.length) {
+    const free = recs.filter((r) => r.ok && !r.scene);
+    const cand = orderScenes.filter((n) => !sceneFile[n]);
+    if (free.length && free.length === cand.length) {
+      free.forEach((r, i) => { r.scene = cand[i]; r.how = "order"; sceneFile[cand[i]] = { file: null, uuid: "order" }; });
+      console.log("::notice::Scenes given by download order for " + free.length + " image(s) (names carried no scene): " + cand.join(","));
+    } else if (free.length) {
+      console.log("Order matching skipped: " + free.length + " unmatched image(s) but " + cand.length + " scene(s) still without an image");
+    }
+  }
+
+  const usedFinal = new Set();
+  const usedRejected = new Set();
+  const items = [];
+  let accepted = 0;
+  let rejected = 0;
+  for (const r of recs) {
+    let name;
+    if (r.ok) {
+      accepted += 1;
+      if (r.scene) {
+        name = "scene_" + String(r.scene).padStart(2, "0") + r.ext;
+        sceneFile[r.scene].file = "final/" + name;
+      } else if (mapped) {
+        name = "unmatched_" + uniqueName(r.f, r.ext, usedFinal);
+      } else {
+        name = uniqueName(r.f, r.ext, usedFinal);
+      }
+      fs.copyFileSync(r.full, path.join(FINAL_DIR, name));
     } else {
       rejected += 1;
       fs.mkdirSync(REJECTED_DIR, { recursive: true });
-      name = uniqueName(f, ext, usedRejected);
-      fs.copyFileSync(full, path.join(REJECTED_DIR, name));
+      name = uniqueName(r.f, r.ext, usedRejected);
+      fs.copyFileSync(r.full, path.join(REJECTED_DIR, name));
     }
-    items.push({ file: (ok ? "final/" : "rejected/") + name, original_name: f.replace(/^\d{10,}-/, ""), scene, bytes: buf.length, width: size ? size.w : null, height: size ? size.h : null, matches_requested_ratio: size ? ok : null });
+    items.push({ file: (r.ok ? "final/" : "rejected/") + name, original_name: r.f.replace(/^\d{10,}-/, ""), scene: r.scene, matched_by: r.how, bytes: r.buf.length, width: r.size ? r.size.w : null, height: r.size ? r.size.h : null, matches_requested_ratio: r.size ? r.ok : null });
   }
   const total = TRACKER ? TRACKER.count : 0;
   const scenes = [];
@@ -262,9 +414,21 @@ function collectImages() {
   const missingScenes = mapped ? scenes.filter((s) => !s.file).map((s) => s.scene) : [];
   fs.writeFileSync(path.join(DEBUG_DIR, "downloads-listing.json"), JSON.stringify({ items, skipped }, null, 2));
   console.log("Valid images:", accepted + rejected, "| accepted:", accepted, "| wrong ratio:", rejected, "| skipped:", skipped.length);
-  if (mapped) console.log("Scene matching: " + (total - missingScenes.length) + " of " + total + " scenes matched by media UUID | missing: " + (missingScenes.join(",") || "none"));
-  else console.log("::warning::No prompt->media mapping captured; images keep Flow's names and cannot be matched to scenes (see debug/media-map.json and media-samples.json)");
+  if (mapped) {
+    const by = (h) => recs.filter((r) => r.how === h).length;
+    console.log("Scene matching: " + (total - missingScenes.length) + " of " + total + " scenes matched (UUID " + by("uuid") + ", tag " + by("tag") + ", order " + by("order") + ") | missing: " + (missingScenes.join(",") || "none"));
+  } else console.log("::warning::No prompt->media mapping captured; images keep Flow's names and cannot be matched to scenes (see debug/media-map.json and media-samples.json)");
   return { accepted, rejected, items, skipped, scenes, missingScenes, mapped };
+}
+
+// The scenes (1-based) whose prompts finished DONE, for the download-order fallback of collectImages. Only valid while every prompt
+// was submitted exactly once (a retried prompt's image arrives late, so the order would no longer follow the prompt numbers).
+function orderScenesFromState(state, parsedOk) {
+  if (!parsedOk) return null;
+  if (!state.every((s) => s.attempts === 1)) return null;
+  const list = [];
+  state.forEach((s, i) => { if (s.state === "GENERATION_COMPLETED") list.push(i + 1); });
+  return list;
 }
 
 // Takes the thumbnail out of the download folders: the first valid image with the thumbnail's shape is copied to THUMB_OUT as
@@ -316,6 +480,8 @@ async function dumpUiText(ui, name) {
   if (THUMB_FILE) console.log("Thumbnail pass on (same session):", THUMB_FILE, "->", THUMB_ASP.label, "then back to", ASP.label);
   TRACKER = createMediaTracker(prompts, DEBUG_DIR);
 
+  patchExtensionWorker();
+
   const context = await chromium.launchPersistentContext(path.join(__dirname, "profile"), {
     headless: false,
     viewport: { width: 1440, height: 900 },
@@ -323,12 +489,30 @@ async function dumpUiText(ui, name) {
     downloadsPath: RAW_DIR,
     args: ["--no-sandbox", "--disable-extensions-except=" + EXT_DIR, "--load-extension=" + EXT_DIR]
   });
+  CONTEXT = context;
   context.on("response", TRACKER.onResponse);
 
+  // Records what the extension pages ask Chrome to download (the service worker is covered by patchExtensionWorker).
+  try { await context.exposeFunction("__zapiDl", (r) => { try { addRec(r); } catch (e) {} }); }
+  catch (e) { console.log("Download-name capture: page binding not installed:", String(e && e.message).slice(0, 100)); }
+  try { await context.addInitScript(zdlPatch); }
+  catch (e) { console.log("Download-name capture: page script not installed:", String(e && e.message).slice(0, 100)); }
+
   const hook = (pg) => pg.on("download", async (d) => {
-    const target = path.join(DL_DIR, Date.now() + "-" + d.suggestedFilename());
+    let rec = null;
+    try { rec = await recoverName(d.url()); } catch (e) {}
+    const sugg = d.suggestedFilename();
+    const own = rec && rec.filename ? cleanName(rec.filename) : "";
+    let name = own || sugg;
+    if (!/\.[A-Za-z0-9]{2,5}$/.test(name)) name += ".webp";
+    // Any media UUID in the download URL goes INTO the name (before the extension), so the tracker can match it to a scene.
+    const ids = [...new Set((String(d.url()).match(UUID_RE) || []).map((x) => x.toLowerCase()))].slice(0, 3);
+    if (ids.length) name = name.replace(/(\.[A-Za-z0-9]{2,5})$/, "__" + ids.join("_") + "$1");
+    let target = path.join(DL_DIR, Date.now() + "-" + name);
+    for (let n = 2; fs.existsSync(target); n++) target = path.join(DL_DIR, Date.now() + "-" + n + "-" + name);
     await d.saveAs(target).catch((e) => console.log("download save failed:", e.message));
-    console.log("Saved", path.basename(target));
+    console.log("Saved", path.basename(target), own ? "(extension's own name)" : "(no extension name found)");
+    DL_NAMES.push({ t: new Date().toISOString(), url: safeUrl(d.url()), url_uuids: ids.length, suggested: sugg, extension_name: own || null, extension_kind: rec ? rec.kind : null, saved_as: path.basename(target).replace(/^\d{10,}-/, "") });
   });
   context.pages().forEach(hook);
   context.on("page", hook);
@@ -602,7 +786,7 @@ async function dumpUiText(ui, name) {
   // Retry prompts the extension marked FAILED AND prompts marked done whose scene has no usable image
   // (only judged when the prompt->media mapping was captured), only when the queue was read cleanly.
   for (let pass = 1; pass <= RETRY_PASSES && parsedOk; pass++) {
-    const cur = collectImages();
+    const cur = collectImages(orderScenesFromState(state, parsedOk));
     const miss = new Set(cur.missingScenes);
     const redo = state.map((s, i) => ({ s, i })).filter((x) => x.s.state === "GENERATION_FAILED" || miss.has(x.i + 1));
     if (!redo.length || Date.now() > deadline || blocked) break;
@@ -631,10 +815,12 @@ async function dumpUiText(ui, name) {
   if (blocked) mark('blocked_unusual_activity');
   if (retried) await flow.waitForTimeout(cfg.settleSeconds * 1000);
   try { if (/\/project\//.test(flow.url())) saveCookies(await context.cookies()); } catch (e) {}
+  await pullSwLog();
   await context.close();
 
-  const img = collectImages();
+  const img = collectImages(orderScenesFromState(state, parsedOk));
   TRACKER.writeDebug();
+  writeDownloadNames();
   EVID.results = prompts.map((p, i) => ({ index: i + 1, prompt: p.slice(0, 80), state: state[i].state, ui_status: state[i].ui_status, attempts: state[i].attempts }));
   const count = (s) => EVID.results.filter((r) => r.state === s).length;
   const expectedImages = prompts.length * WANT.count;
@@ -660,7 +846,7 @@ async function dumpUiText(ui, name) {
     thumbnail: THUMB_FILE ? { requested: true, ratio: THUMB_ASP.label, ran: thumb.ran, saved: thumb.saved, settings_verdict: EVID.flow.thumbSettings ? EVID.flow.thumbSettings.verdict : null } : { requested: false }
   };
   writeEvidence();
-  fs.writeFileSync(path.join(FINAL_DIR, "manifest.json"), JSON.stringify({ generated_at: new Date().toISOString(), batch_status: verdict.status, status_reasons: verdict.reasons, summary: EVID.summary, prompts: EVID.results, scenes: img.scenes, missing_scenes: img.missingScenes, images: img.items, note: "scene_NN.* = image for prompt NN, matched by Flow media UUID. unmatched_* = accepted images that map to no scene. Scenes listed in missing_scenes need the Cloudflare fallback. When mapping_available is false, images keep Flow's names and scene order is unknown." }, null, 2));
+  fs.writeFileSync(path.join(FINAL_DIR, "manifest.json"), JSON.stringify({ generated_at: new Date().toISOString(), batch_status: verdict.status, status_reasons: verdict.reasons, summary: EVID.summary, prompts: EVID.results, scenes: img.scenes, missing_scenes: img.missingScenes, images: img.items, note: "scene_NN.* = image for prompt NN, matched by Flow media UUID, by the [sNN] tag in the file name, or (last resort) by download order. unmatched_* = accepted images that map to no scene. Scenes listed in missing_scenes need the Cloudflare fallback. When mapping_available is false, images keep Flow's names and scene order is unknown." }, null, 2));
   console.log('PROMPT_RESULTS', JSON.stringify(EVID.results.map((r) => r.index + ':' + r.state)));
   console.log('EVIDENCE_SUMMARY', JSON.stringify(EVID.summary), 'http_errors=' + EVID.http.length, 'console_errors=' + EVID.console.length, 'failed_requests=' + EVID.requestFailed.length);
   console.log("RESULT prompts=" + prompts.length + " expected_images=" + expectedImages + " accepted=" + img.accepted + " wrong_ratio=" + img.rejected + " extra=" + over.extra + " extension_done=" + done);
@@ -672,7 +858,7 @@ async function dumpUiText(ui, name) {
       "| Prompts | " + s.prompts + " |", "| Wanted | " + s.wanted.model + ", " + s.wanted.ratio + ", x" + s.wanted.per_prompt + " |",
       "| Settings verified | " + s.settings_verified + " (" + s.settings_verdict + ") |", "| Generation completed / failed / unfinished | " + s.generation_completed + " / " + s.generation_failed + " / " + s.generation_unfinished + " |",
       "| Images kept (right ratio) | " + s.images_accepted + " of " + s.expected_images + " expected |", "| Images rejected (wrong ratio) | " + s.images_wrong_ratio + " (in downloads/rejected) |",
-      "| Extra images beyond request | " + s.extra_images + " |", "| Scene mapping | " + (s.mapping_available ? "UUID match, missing scenes: " + (s.missing_scenes.join(",") || "none") : "NOT available") + " |",
+      "| Extra images beyond request | " + s.extra_images + " |", "| Scene mapping | " + (s.mapping_available ? "UUID/tag/order match, missing scenes: " + (s.missing_scenes.join(",") || "none") : "NOT available") + " |",
       "| Thumbnail | " + (s.thumbnail.requested ? (s.thumbnail.saved ? "saved (" + s.thumbnail.ratio + ")" : "none (ran: " + s.thumbnail.ran + ")") : "not requested") + " |", ""].join(NL);
     try { fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, md + NL); } catch (e) {}
   }
@@ -685,4 +871,4 @@ async function dumpUiText(ui, name) {
     console.log("::warning::PARTIAL_SUCCESS - kept " + img.accepted + " image(s); " + verdict.reasons.join("; ") + ". See manifest.json, debug/flow-network.json and downloads/rejected");
     if (cfg.failOnPartial === true) process.exit(1);
   }
-})().catch((e) => { console.error(e.message || e); try { EVID.error = redact(e && e.message); writeEvidence(); } catch (_) {} process.exit(1); });
+})().catch((e) => { console.error(e.message || e); try { EVID.error = redact(e && e.message); writeEvidence(); writeDownloadNames(); } catch (_) {} process.exit(1); });

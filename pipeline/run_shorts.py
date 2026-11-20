@@ -7,11 +7,14 @@ Pipeline: input -> topic -> Hindi script -> image prompts -> render (existing re
 Inputs (environment, set by .github/workflows/shorts.yml):
   IDEA, SCRIPT          manual idea / finished script (both empty = scheduled run, a topic is picked automatically)
   PACKAGE               finished package JSON from Claude chat (title, description, mood, hook, scenes with narration +
-                        image_prompt, see pipeline/package.py); skips topic, script and image-prompt steps. It can also carry
-                        voice_style (delivery style of this script), random_bg (true = random artwork background, default plain black),
-                        bgm (true = background music, default none) and thumbnail_prompt (portrait thumbnail, see pipeline/thumb_prompt.py)
+                        image_prompt, see pipeline/package.py); skips topic, script and image-prompt steps. Its image prompts are
+                        complete on their own (style wording and recurring characters included), so no preset style is used for it.
+                        It can also carry voice_style (delivery style of this script), random_bg (true = random artwork background,
+                        default plain black), bgm (true = background music, default none) and thumbnail_prompt (portrait thumbnail,
+                        see pipeline/thumb_prompt.py)
   SCRIPT_MODE           auto | truth | story   (scheduled runs only)
-  ART_STYLE             random (default) | indian_storybook | sketchbook_doodle | whimsical_indian | editorial_pencil |
+  ART_STYLE             scheduled, idea and script runs only (not used for a package):
+                        random (default) | indian_storybook | sketchbook_doodle | whimsical_indian | editorial_pencil |
                         stickman_sepia | village_storybook
   IMAGE_PROVIDER_ORDER  optional, copied to HINDI_IMAGE_ORDER for the renderer
   MUSIC_VOLUME          optional, level of the background song (default 0.14, see music_picker.py)
@@ -175,7 +178,11 @@ def main():
         if env('PACKAGE'):
             pkg = package.parse(env('PACKAGE'))
             hook = pkg['hook']
-        style_key, style = styles.get_style((pkg and pkg['style_key']) or env('ART_STYLE') or None)
+        if pkg:
+            # A package brings complete image prompts (style wording and recurring characters included): no preset style is used.
+            style_key, style = None, {'name': pkg['style_name']}
+        else:
+            style_key, style = styles.get_style(env('ART_STYLE') or None)
         if pkg:
             lines.append('- Source: finished package from chat (no topic, script or image-prompt step)')
         elif idea or own_script:

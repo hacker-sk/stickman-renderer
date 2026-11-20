@@ -1,0 +1,300 @@
+name: Long Landscape Video
+
+# YouTube long landscape video (1920x1080) from a package JSON: prepare -> flow -> make.
+# Start: push jobs/long_package.json (best for 200+ scenes) or Actions > Long Landscape Video > Run workflow and paste the package.
+# Package = same shape as the Hindi Shorts package (title, description, scenes with narration + image_prompt), any length.
+#
+#   prepare: voice in chunks (kept per chunk in a cache), word timing per chunk, scene start times, scene-tagged Flow prompts.
+#   flow:    ALL images are made here (Google Flow, landscape, 20 prompts per browser session). Every image goes into a cache folder as soon
+#            as it exists. Missing/failed images are generated again (3 rounds in the step, then a second step for what is still missing).
+#            Failed or cancelled run: everything made so far stays in the cache and the next run of the SAME package continues from it.
+#   make:    only joins images + voice into output/video.mp4. No image generation, no voice, no music, no transitions, no pan/zoom.
+#            Uploads to the free temporary host (like Shorts) and keeps a release + artifact copy. output/metadata.json has title + description.
+# Variables: FLOW_LONG_ASPECT (default landscape), FLOW_LONG_CHUNK (prompts per Flow session, default 20), FLOW_MODEL. Secrets/vars as shorts.yml.
+
+on:
+  push:
+    paths:
+      - "jobs/long_package.json"
+  workflow_dispatch:
+    inputs:
+      package:
+        description: "Package JSON (title, description, scenes with narration + image_prompt). Leave empty to use jobs/long_package.json"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: long-landscape
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    outputs:
+      vid: ${{ steps.pkg.outputs.vid }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get the package
+        id: pkg
+        env:
+          PACKAGE_INPUT: ${{ inputs.package }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "push" ] || [ -z "$PACKAGE_INPUT" ]; then
+            [ -f jobs/long_package.json ] && cp jobs/long_package.json /tmp/package.json
+          else
+            printf '%s' "$PACKAGE_INPUT" > /tmp/package.json
+          fi
+          if [ ! -s /tmp/package.json ]; then echo "::error::No package (push jobs/long_package.json or paste it)"; exit 1; fi
+          echo "vid=$(sha256sum /tmp/package.json | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Cache ffmpeg
+        uses: actions/cache@v4
+        with:
+          path: ~/ffmpeg-static
+          key: ffmpeg-static-v1
+
+      - name: Install ffmpeg
+        run: bash pipeline/setup_ffmpeg.sh
+
+      - name: Install Python packages
+        run: |
+          pip install torch==2.8.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cpu || echo "::warning::torch install failed, word timing will be estimated"
+          pip install -c constraints.txt -r requirements.txt gradio_client
+
+      - name: Cache Whisper and alignment models
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/huggingface
+            ~/.cache/torch
+          key: whisperx-large-v3-turbo-hi-v2
+
+      - name: Restore voice chunks of this package
+        uses: actions/cache/restore@v4
+        with:
+          path: flow-batch/long/voice_chunks
+          key: long-voice-${{ steps.pkg.outputs.vid }}-restore
+          restore-keys: |
+            long-voice-${{ steps.pkg.outputs.vid }}-
+
+      - name: Prepare voice, timing and Flow prompts
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
+          GEMINI_API_KEY_3: ${{ secrets.GEMINI_API_KEY_3 }}
+          GEMINI_API_KEY_4: ${{ secrets.GEMINI_API_KEY_4 }}
+          GEMINI_API_KEY_5: ${{ secrets.GEMINI_API_KEY_5 }}
+          GEMINI_API_KEY_6: ${{ secrets.GEMINI_API_KEY_6 }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          FISH_API_KEY: ${{ secrets.FISH_API_KEY }}
+        run: python pipeline/long_prepare.py --package /tmp/package.json --out flow-batch/long
+
+      - name: Save voice chunks
+        if: always() && hashFiles('flow-batch/long/voice_chunks/**') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: flow-batch/long/voice_chunks
+          key: long-voice-${{ steps.pkg.outputs.vid }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Upload voice, timing and prompts
+        uses: actions/upload-artifact@v4
+        with:
+          name: long-prep
+          path: |
+            flow-batch/long/long_flow.json
+            flow-batch/long/long_meta.json
+            flow-batch/long/long_voice.wav
+          retention-days: 3
+
+  flow:
+    needs: prepare
+    if: needs.prepare.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get the prompts
+        uses: actions/download-artifact@v4
+        with:
+          name: long-prep
+          path: flow-batch/long
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Download ZAPI Flow extension
+        run: |
+          EXT_ID=debadkiomlbdambamdpdlgdkgnedcjil
+          DEST=flow-batch/extension/zapi-flow
+          if [ ! -f "$DEST/manifest.json" ]; then
+            mkdir -p "$DEST"
+            curl -fsSL -o /tmp/zapi.crx "https://clients2.google.com/service/update2/crx?response=redirect&prodversion=126.0&acceptformat=crx2,crx3&x=id%3D${EXT_ID}%26uc"
+            unzip -o -q /tmp/zapi.crx -d "$DEST" || test -f "$DEST/manifest.json"
+          fi
+          rm -rf "$DEST/_metadata"
+          grep -m1 '"version"' "$DEST/manifest.json"
+
+      - name: Install Flow dependencies
+        working-directory: flow-batch
+        run: |
+          npm install
+          npx playwright install --with-deps chromium
+          sudo apt-get install -y xvfb
+
+      - name: Restore saved Flow session
+        uses: actions/cache/restore@v4
+        with:
+          path: flow-batch/session
+          key: flow-session-${{ github.run_id }}
+          restore-keys: |
+            flow-session-
+
+      - name: Restore images made by earlier runs of this package
+        uses: actions/cache/restore@v4
+        with:
+          path: flow-batch/long_images
+          key: long-img-${{ needs.prepare.outputs.vid }}-restore
+          restore-keys: |
+            long-img-${{ needs.prepare.outputs.vid }}-
+
+      - name: Flow images, pass 1
+        id: pass1
+        continue-on-error: true
+        timeout-minutes: 160
+        working-directory: flow-batch
+        env:
+          FLOW_COOKIES_B64: ${{ secrets.FLOW_COOKIES_B64 }}
+          FLOW_URL: ${{ vars.FLOW_PROJECT_URL }}
+          FLOW_ASPECT: ${{ vars.FLOW_LONG_ASPECT || 'landscape' }}
+          FLOW_MODEL: ${{ vars.FLOW_MODEL || 'Nano Banana Lite' }}
+          LONG_CHUNK: ${{ vars.FLOW_LONG_CHUNK || '20' }}
+          LONG_BUDGET_MIN: "145"
+        run: xvfb-run -a --server-args="-screen 0 1440x900x24" node run_long.js
+
+      - name: Flow images, pass 2 (only what is still missing)
+        id: pass2
+        if: always() && steps.pass1.outcome == 'failure'
+        continue-on-error: true
+        timeout-minutes: 100
+        working-directory: flow-batch
+        env:
+          FLOW_COOKIES_B64: ${{ secrets.FLOW_COOKIES_B64 }}
+          FLOW_URL: ${{ vars.FLOW_PROJECT_URL }}
+          FLOW_ASPECT: ${{ vars.FLOW_LONG_ASPECT || 'landscape' }}
+          FLOW_MODEL: ${{ vars.FLOW_MODEL || 'Nano Banana Lite' }}
+          LONG_CHUNK: ${{ vars.FLOW_LONG_CHUNK || '20' }}
+          LONG_BUDGET_MIN: "85"
+        run: xvfb-run -a --server-args="-screen 0 1440x900x24" node run_long.js
+
+      - name: Save refreshed Flow session
+        if: always() && hashFiles('flow-batch/session/cookies.json') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: flow-batch/session
+          key: flow-session-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Save every image made so far
+        if: always() && hashFiles('flow-batch/long_images/**') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: flow-batch/long_images
+          key: long-img-${{ needs.prepare.outputs.vid }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Upload images
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: long-images
+          path: flow-batch/long_images
+          if-no-files-found: ignore
+          retention-days: 3
+
+      - name: Upload Flow debug files
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: long-flow-debug
+          path: flow-batch/long_debug
+          if-no-files-found: ignore
+          retention-days: 3
+
+      - name: Check that every image exists
+        if: ${{ !cancelled() }}
+        working-directory: flow-batch
+        run: node run_long.js --check
+
+  make:
+    needs: [prepare, flow]
+    if: needs.flow.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Cache ffmpeg
+        uses: actions/cache@v4
+        with:
+          path: ~/ffmpeg-static
+          key: ffmpeg-static-v1
+
+      - name: Install ffmpeg
+        run: bash pipeline/setup_ffmpeg.sh
+
+      - name: Install Python packages
+        run: pip install -c constraints.txt -r requirements.txt gradio_client
+
+      - name: Get voice, timing and images
+        uses: actions/download-artifact@v4
+        with:
+          name: long-prep
+          path: flow_in/prep
+
+      - name: Get Flow images
+        uses: actions/download-artifact@v4
+        with:
+          name: long-images
+          path: flow_in/images
+
+      - name: Make the video (join only)
+        id: make
+        run: python pipeline/long_make.py --meta flow_in/prep/long_meta.json --voice flow_in/prep/long_voice.wav --images flow_in/images --out output
+
+      - name: Upload the video
+        if: always() && steps.make.outputs.video_ready == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: long-video
+          path: |
+            output/video.mp4
+            output/metadata.json
+            output/result.json
+          retention-days: 3
+
+      - name: Keep a copy as a release
+        if: always() && steps.make.outputs.video_ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "long-video-${{ github.run_number }}" output/video.mp4 output/metadata.json \
+            --title "Long video ${{ github.run_number }}" --notes "Made by run ${{ github.run_id }}" || true
+          gh release list --limit 100 --json tagName --jq '.[10:][].tagName' | grep '^long-video-' | xargs -r -I{} gh release delete {} --yes --cleanup-tag || true

@@ -1,18 +1,35 @@
 """Finished package written in Claude chat (the old n8n 'Claude Script Input' webhook, now the `package` workflow input).
 
-The package carries everything the renderer needs, so no topic, script or image-prompt step runs:
+The package carries everything the renderer needs, so no topic, script or image-prompt step runs, and the preset art styles
+(pipeline/styles.py) are NOT used for a package:
 
 {
   "title": "...", "description": "...", "mood": "emotional",          (mood: motivational|emotional|neutral; the older inspiring|mysterious|dramatic|upbeat|calm still work)
   "hashtags": ["..."], "tags": ["..."],                              (optional, same handling as the script step)
   "hook": "opening line shown above the picture"  or  {"line": "...", "focus": "..."},   (optional, default = script opening)
-  "art_style": "indian_storybook|sketchbook_doodle|whimsical_indian|editorial_pencil|stickman_sepia|village_storybook",
-                                                                     (optional, default = the art_style input; when that is empty or random too, one of these is picked at random)
+  "art_style": "short name of the look, e.g. Indian Sepia Stickman Cartoon",
+                                                                     (optional, only a label passed to the renderer for its fallback image providers; default "illustration".
+                                                                      It does not add any style wording: the style must be written inside every image_prompt)
   "voice_style": "delivery style for this script",                    (optional, written for every script; sent after the Iapetus voice description; default style when empty)
   "random_bg": true,                                                 (optional, default false = plain black screen; true = one random artwork background)
   "bgm": true,                                                       (optional, default false = no background music; true = a song picked by the mood)
   "scenes": [{"narration": "Hindi in Devanagari", "image_prompt": "English prompt used as written"}, ...]
 }
+
+IMAGE PROMPTS. Every image_prompt is used exactly as written. Nothing is added to it: no style text, no character notes, no
+other scene. The image model sees ONE prompt at a time and has no memory, so each prompt must be enough on its own to draw its
+picture:
+  - the subjects (people, animals, objects) with their complete look: age, face, build, clothing, colours and one distinguishing
+    feature, plus expression, pose and action; show a person only when the line needs one;
+  - the environment, place and time of day, the composition and where things are placed, the framing and camera angle;
+  - the lighting, colours and mood;
+  - the complete art style wording (medium, linework, texture, palette, light), the same words in every prompt of the video;
+  - no readable text, letters, numbers, logos or watermarks.
+CONSISTENCY. When the story has a recurring character, place or object, write its full description again, in the same words, in
+EVERY prompt that shows it (same look, same clothing and colours, same distinguishing feature), so all images feel like one
+story and one world. When the video has no recurring subject, each prompt is simply a fresh complete picture in the same style.
+Never write "same character", "as before", "again" or refer to another image or to the script. Neighbouring prompts differ in
+subject, setting, framing and camera angle unless the story needs the same one. Use at most 1900 characters per prompt.
 
 The mood picks the background music (only when bgm is true): one random song named <mood>_NN or neutral_NN in music_hindi/ (see music_picker.py).
 
@@ -20,7 +37,7 @@ Same checks as the n8n 'Claude Package' node.
 """
 import json
 
-from . import script, styles
+from . import script
 
 MAX_PROMPT = 1900
 MUSIC_MOODS = ('motivational', 'emotional', 'neutral')
@@ -37,20 +54,8 @@ def _flag(v):
     return _s(v).lower() in _TRUE
 
 
-def _style_key(value):
-    v = _s(value)
-    if not v:
-        return None
-    if v in styles.STYLES:
-        return v
-    for k, st in styles.STYLES.items():
-        if st['name'].lower() == v.lower():
-            return k
-    return None
-
-
 def parse(raw):
-    """Returns {'prep', 'scenes', 'hook', 'style_key', 'voice_style', 'random_bg', 'bgm'}; raises RuntimeError with a readable message when the package is unusable."""
+    """Returns {'prep', 'scenes', 'hook', 'style_name', 'voice_style', 'random_bg', 'bgm'}; raises RuntimeError with a readable message when the package is unusable."""
     try:
         b = json.loads(raw)
     except ValueError as e:
@@ -90,7 +95,8 @@ def parse(raw):
         hook = _s(hook)
     else:
         hook = None
-    return {'prep': prep, 'scenes': scenes, 'hook': hook or None, 'style_key': _style_key(b.get('art_style') or b.get('artStyle')),
+    return {'prep': prep, 'scenes': scenes, 'hook': hook or None,
+            'style_name': _s(b.get('art_style') or b.get('artStyle'))[:80] or 'illustration',
             'voice_style': _s(b.get('voice_style') or b.get('style_instruction') or b.get('gemini_style')),
             'random_bg': _flag(b.get('random_bg')) or _s(b.get('background')).lower() == 'random',
             'bgm': _flag(b.get('bgm')) or _flag(b.get('music'))}

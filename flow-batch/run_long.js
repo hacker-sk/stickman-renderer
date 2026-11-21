@@ -1,11 +1,14 @@
 #!/usr/bin/env node
-// Long landscape video: generates 200+ images with the existing run_flow.js in small CHUNKS and keeps every image in a persistent
-// folder (long_images/scene_NNN.<ext>, NNN = prompt number in long/long_flow.json). The workflow caches that folder, so:
-//  - a failed prompt/chunk is simply still "missing" and is generated again in the next round (LONG_ROUNDS, default 3),
+// Long landscape video: generates 200+ images with the existing run_flow.js and keeps every image in a persistent folder
+// (long_images/scene_NNN.<ext>, NNN = prompt number in long/long_flow.json). The workflow caches that folder, so:
+//  - ALL missing prompts go into ONE Flow session (LONG_CHUNK=0, the default). Only an error ends the session early. Set LONG_CHUNK=N to
+//    split into sessions of N prompts instead.
+//  - whatever is still missing after the session is generated again in the next round (LONG_ROUNDS, default 3, again one session for all of it),
 //  - a failed or cancelled run leaves everything it made in the cache and the next run continues with the missing ones only.
-// Stops early when Flow shows "unusual activity" (blocked), on an auth/settings error, when a round makes no progress, or when the
-// time budget (LONG_BUDGET_MIN) is used up (no new chunk is started after that). `--check` only lists what is missing.
-// Exit code 0 = every image exists, 1 = some are missing.
+// run_flow.js caps its wait at 10 minutes, far too short for 200 images, so a patched COPY (run_flow_long.js) is used whose wait is
+// FLOW_MAX_WAIT_MIN = the time left in LONG_BUDGET_MIN. run_flow.js itself is not touched.
+// Stops on "unusual activity" (blocked), on an auth/settings error, when a round makes no progress, or when the time budget is used up.
+// `--check` only lists what is missing. Exit code 0 = every image exists, 1 = some are missing.
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -16,15 +19,14 @@ const PROMPTS = path.resolve(ROOT, process.env.LONG_PROMPTS || "long/long_flow.j
 const CACHE = path.resolve(ROOT, process.env.LONG_CACHE || "long_images");
 const DEBUG_ALL = path.resolve(ROOT, "long_debug");
 const CHUNK_FILE = "prompts/long_chunk.json";
-const CHUNK = Math.max(1, parseInt(process.env.LONG_CHUNK || "20", 10) || 20);
 const ROUNDS = Math.max(1, parseInt(process.env.LONG_ROUNDS || "3", 10) || 3);
 const BUDGET_MS = (parseFloat(process.env.LONG_BUDGET_MIN || "140") || 140) * 60000;
-const CHUNK_TIMEOUT_MS = 25 * 60000;
 const FATAL_RE = /AUTH FAILED|SETTINGS MISMATCH|SETTINGS UNVERIFIED|secret is missing|Invalid model|Unknown aspect/i;
 const started = Date.now();
 
 const all = JSON.parse(fs.readFileSync(PROMPTS, "utf8")).map((p) => (typeof p === "string" ? p : p.prompt));
 const N = all.length;
+const CHUNK = (parseInt(process.env.LONG_CHUNK || "0", 10) || 0) > 0 ? parseInt(process.env.LONG_CHUNK, 10) : N;
 fs.mkdirSync(CACHE, { recursive: true });
 
 function pad(n) { return String(n).padStart(3, "0"); }
@@ -47,26 +49,37 @@ function finish(msg) {
 
 if (process.argv.includes("--check")) finish("check only");
 
+// patched copy of run_flow.js with a longer wait (the original caps it at 10 minutes)
+const FLOW_SCRIPT = "run_flow_long.js";
+{
+  let src = fs.readFileSync(path.join(ROOT, "run_flow.js"), "utf8");
+  const a = src.replace("Math.min(minutes, 10)", "Math.min(minutes, +(process.env.FLOW_MAX_WAIT_MIN || 10))");
+  const b = a.replace("setDeadline(cfg.timeoutMinutes)", "setDeadline(+(process.env.FLOW_MAX_WAIT_MIN || cfg.timeoutMinutes))");
+  if (a === src || b === a) console.log("::warning::run_flow.js wait cap not patched (text changed?), the wait stays at 10 minutes");
+  fs.writeFileSync(path.join(ROOT, FLOW_SCRIPT), b);
+}
+
 let blocked = false, fatal = false, outOfTime = false;
 
 function runChunk(round, ci, list) {
   for (const d of ["downloads", "debug", "profile"]) rm(path.join(ROOT, d));
   rm(path.join(os.homedir(), "Downloads"));
   fs.writeFileSync(path.join(ROOT, CHUNK_FILE), JSON.stringify(list.map((p) => all[p - 1])));
-  console.log("== round " + round + " chunk " + ci + ": prompts " + list.join(","));
-  const r = cp.spawnSync("node", ["run_flow.js"], {
-    cwd: ROOT, timeout: CHUNK_TIMEOUT_MS, killSignal: "SIGKILL", encoding: "utf8", maxBuffer: 1 << 28,
+  const waitMin = Math.max(10, Math.floor((BUDGET_MS - (Date.now() - started)) / 60000));
+  console.log("== round " + round + " session " + ci + ": " + list.length + " prompt(s), wait up to " + waitMin + " min");
+  const r = cp.spawnSync("node", [FLOW_SCRIPT], {
+    cwd: ROOT, timeout: (waitMin + 20) * 60000, killSignal: "SIGKILL", encoding: "utf8", maxBuffer: 1 << 28,
     stdio: ["ignore", "inherit", "pipe"],
-    env: Object.assign({}, process.env, { PROMPTS_FILE: CHUNK_FILE, FLOW_COUNT: "1" })
+    env: Object.assign({}, process.env, { PROMPTS_FILE: CHUNK_FILE, FLOW_COUNT: "1", FLOW_MAX_WAIT_MIN: String(waitMin) })
   });
   const err = String(r.stderr || "");
   if (err) process.stderr.write(err.slice(-4000));
-  if (r.error) console.log("chunk run error:", String(r.error.message).slice(0, 160));
+  if (r.error) console.log("session run error:", String(r.error.message).slice(0, 160));
   try { cp.spawnSync("pkill", ["-f", "chrom"]); } catch (e) {}
-  if (FATAL_RE.test(err)) { fatal = true; console.log("::error::Flow setup problem, no more chunks: " + err.trim().slice(0, 200)); }
+  if (FATAL_RE.test(err)) { fatal = true; console.log("::error::Flow setup problem, no more sessions: " + err.trim().slice(0, 200)); }
   if (fs.existsSync(path.join(ROOT, "debug", "blocked.png"))) blocked = true;
 
-  // collect: scene_NN in downloads/final = NN-th prompt of THIS chunk
+  // collect: scene_NN in downloads/final = NN-th prompt of THIS session
   const fin = path.join(ROOT, "downloads", "final");
   let got = 0;
   if (fs.existsSync(fin)) {
@@ -79,10 +92,10 @@ function runChunk(round, ci, list) {
       got += 1;
     }
   }
-  console.log("chunk " + ci + " kept " + got + " of " + list.length + " new image(s)");
+  console.log("session " + ci + " kept " + got + " of " + list.length + " new image(s)");
   try {
     fs.mkdirSync(DEBUG_ALL, { recursive: true });
-    const dst = path.join(DEBUG_ALL, "r" + round + "c" + ci);
+    const dst = path.join(DEBUG_ALL, "r" + round + "s" + ci);
     if (fs.existsSync(path.join(ROOT, "debug"))) fs.renameSync(path.join(ROOT, "debug"), dst);
   } catch (e) {}
 }
@@ -94,7 +107,7 @@ for (let round = 1; round <= ROUNDS && !blocked && !fatal && !outOfTime; round++
   console.log("== round " + round + ": " + miss.length + " image(s) missing");
   let ci = 0;
   for (let i = 0; i < miss.length; i += CHUNK) {
-    if (Date.now() - started > BUDGET_MS) { outOfTime = true; console.log("::warning::time budget used up, stopping (cache keeps everything)"); break; }
+    if (Date.now() - started > BUDGET_MS - 10 * 60000) { outOfTime = true; console.log("::warning::time budget used up, stopping (cache keeps everything)"); break; }
     ci += 1;
     runChunk(round, ci, miss.slice(i, i + CHUNK));
     if (blocked || fatal) break;

@@ -1,17 +1,20 @@
 name: Long Landscape Video
 
-# YouTube long landscape video (1920x1080) from a package JSON: prepare -> flow -> make.
+# YouTube long landscape video (1920x1080) from a package JSON: prepare -> flow -> make -> upload.
 # Start: push jobs/long_package.json (best for 200+ scenes) or Actions > Long Landscape Video > Run workflow and paste the package.
 # Package = same shape as the Hindi Shorts package (title, description, scenes with narration + image_prompt), any length.
 #
-#   prepare: voice in chunks (kept per chunk in a cache), word timing per chunk, scene start times, scene-tagged Flow prompts.
+#   prepare: voice in big chunks (kept per chunk in a cache), word timing per chunk, scene start times, scene-tagged Flow prompts.
 #   flow:    ALL images are made here (Google Flow, landscape 16:9), ALL prompts in ONE session unless an error stops it. Pass 1 may wait up to
 #            240 minutes for that session (GitHub's hard limit for a job is 360 minutes, so this is close to the maximum). Every image goes
 #            into a cache folder as soon as the session hands it over. Missing/failed images are generated again (rounds in the step, then
 #            a second step of up to 60 minutes for what is still missing). Failed or cancelled run: everything made so far stays in the
 #            cache and the next run of the SAME package continues from it.
-#   make:    only joins images + voice into output/video.mp4. No image generation, no voice, no music, no transitions, no pan/zoom.
+#   make:    only joins images + voice into output/video.mp4. No image generation, no voice, no music, no transitions, no pan/zoom, no captions.
 #            Uploads to the free temporary host (like Shorts) and keeps a release + artifact copy. output/metadata.json has title + description.
+#   upload:  YouTube Data API v3 upload. Needs the secrets YT_CLIENT_ID, YT_CLIENT_SECRET, YT_REFRESH_TOKEN (scope youtube.upload); without them
+#            the job just says it was skipped. Variables: YT_UPLOAD=off (no upload), YT_PRIVACY (private default | unlisted | public),
+#            YT_CATEGORY (22), YT_LANGUAGE (hi), YT_MADE_FOR_KIDS (false), YT_TAGS (comma separated).
 # Variables: FLOW_LONG_ASPECT (default landscape), FLOW_LONG_CHUNK (prompts per Flow session, default 0 = all in one), FLOW_MODEL.
 
 on:
@@ -300,3 +303,36 @@ jobs:
           gh release create "long-video-${{ github.run_number }}" output/video.mp4 output/metadata.json \
             --title "Long video ${{ github.run_number }}" --notes "Made by run ${{ github.run_id }}" || true
           gh release list --limit 100 --json tagName --jq '.[10:][].tagName' | grep '^long-video-' | xargs -r -I{} gh release delete {} --yes --cleanup-tag || true
+
+  upload:
+    needs: make
+    if: needs.make.result == 'success' && vars.YT_UPLOAD != 'off'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install requests
+        run: pip install requests
+
+      - name: Get the video
+        uses: actions/download-artifact@v4
+        with:
+          name: long-video
+          path: output
+
+      - name: Upload to YouTube
+        env:
+          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+          YT_PRIVACY: ${{ vars.YT_PRIVACY || 'private' }}
+          YT_CATEGORY: ${{ vars.YT_CATEGORY || '22' }}
+          YT_LANGUAGE: ${{ vars.YT_LANGUAGE || 'hi' }}
+          YT_MADE_FOR_KIDS: ${{ vars.YT_MADE_FOR_KIDS || 'false' }}
+          YT_TAGS: ${{ vars.YT_TAGS }}
+        run: python pipeline/youtube_upload.py --video output/video.mp4 --meta output/metadata.json --out output/youtube.json

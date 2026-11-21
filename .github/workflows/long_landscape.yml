@@ -114,7 +114,7 @@ jobs:
           FISH_API_KEY: ${{ secrets.FISH_API_KEY }}
           LONG_LANGUAGE: ${{ vars.LONG_LANGUAGE || 'en' }}
           LONG_GEMINI_VOICE: ${{ vars.LONG_GEMINI_VOICE || 'Puck' }}
-          LONG_GEMINI_STYLE: ${{ vars.LONG_GEMINI_STYLE || 'an engaging young guy narrating a viral social media reel: upbeat, fast-paced, hyped and curious, friendly, with a punchy hook' }}
+          LONG_GEMINI_STYLE: "${{ vars.LONG_GEMINI_STYLE || 'an engaging young guy narrating a viral social media reel: upbeat, fast-paced, hyped and curious, friendly, with a punchy hook' }}"
         run: python pipeline/long_prepare.py --package /tmp/package.json --out flow-batch/long
 
       - name: Save voice chunks

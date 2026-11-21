@@ -5,10 +5,11 @@ name: Long Landscape Video
 # Package = same shape as the Hindi Shorts package (title, description, scenes with narration + image_prompt), any length.
 #
 #   prepare: voice in chunks (kept per chunk in a cache), word timing per chunk, scene start times, scene-tagged Flow prompts.
-#   flow:    ALL images are made here (Google Flow, landscape 16:9), ALL prompts in ONE session unless an error stops it. Every image goes
-#            into a cache folder as soon as the session hands it over. Missing/failed images are generated again (3 rounds in the step, then
-#            a second step for what is still missing). Failed or cancelled run: everything made so far stays in the cache and the next run
-#            of the SAME package continues from it.
+#   flow:    ALL images are made here (Google Flow, landscape 16:9), ALL prompts in ONE session unless an error stops it. Pass 1 may wait up to
+#            240 minutes for that session (GitHub's hard limit for a job is 360 minutes, so this is close to the maximum). Every image goes
+#            into a cache folder as soon as the session hands it over. Missing/failed images are generated again (rounds in the step, then
+#            a second step of up to 60 minutes for what is still missing). Failed or cancelled run: everything made so far stays in the
+#            cache and the next run of the SAME package continues from it.
 #   make:    only joins images + voice into output/video.mp4. No image generation, no voice, no music, no transitions, no pan/zoom.
 #            Uploads to the free temporary host (like Shorts) and keeps a release + artifact copy. output/metadata.json has title + description.
 # Variables: FLOW_LONG_ASPECT (default landscape), FLOW_LONG_CHUNK (prompts per Flow session, default 0 = all in one), FLOW_MODEL.
@@ -122,7 +123,7 @@ jobs:
     needs: prepare
     if: needs.prepare.result == 'success'
     runs-on: ubuntu-24.04
-    timeout-minutes: 340
+    timeout-minutes: 358
     steps:
       - uses: actions/checkout@v4
 
@@ -174,7 +175,7 @@ jobs:
       - name: Flow images, pass 1 (all prompts in one session)
         id: pass1
         continue-on-error: true
-        timeout-minutes: 160
+        timeout-minutes: 268
         working-directory: flow-batch
         env:
           FLOW_COOKIES_B64: ${{ secrets.FLOW_COOKIES_B64 }}
@@ -182,14 +183,14 @@ jobs:
           FLOW_ASPECT: ${{ vars.FLOW_LONG_ASPECT || 'landscape' }}
           FLOW_MODEL: ${{ vars.FLOW_MODEL || 'Nano Banana Lite' }}
           LONG_CHUNK: ${{ vars.FLOW_LONG_CHUNK || '0' }}
-          LONG_BUDGET_MIN: "145"
+          LONG_BUDGET_MIN: "240"
         run: xvfb-run -a --server-args="-screen 0 1440x900x24" node run_long.js
 
       - name: Flow images, pass 2 (only what is still missing)
         id: pass2
         if: always() && steps.pass1.outcome == 'failure'
         continue-on-error: true
-        timeout-minutes: 100
+        timeout-minutes: 82
         working-directory: flow-batch
         env:
           FLOW_COOKIES_B64: ${{ secrets.FLOW_COOKIES_B64 }}
@@ -197,7 +198,7 @@ jobs:
           FLOW_ASPECT: ${{ vars.FLOW_LONG_ASPECT || 'landscape' }}
           FLOW_MODEL: ${{ vars.FLOW_MODEL || 'Nano Banana Lite' }}
           LONG_CHUNK: ${{ vars.FLOW_LONG_CHUNK || '0' }}
-          LONG_BUDGET_MIN: "85"
+          LONG_BUDGET_MIN: "60"
         run: xvfb-run -a --server-args="-screen 0 1440x900x24" node run_long.js
 
       - name: Save refreshed Flow session

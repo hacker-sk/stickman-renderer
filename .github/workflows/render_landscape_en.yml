@@ -1,11 +1,19 @@
 name: Render English Landscape video
 
+# Start: push jobs/landscape_en_job.json (the job file from Claude chat), exactly like jobs/package.json starts Hindi Shorts.
+# Manual run: Actions > Render English Landscape video > Run workflow, and give the path of a job JSON file in this repo.
+# The job file is removed from the repo after the run.
+
 on:
+  push:
+    paths:
+      - "jobs/landscape_en_job.json"
   workflow_dispatch:
     inputs:
       job:
-        description: Path of the job JSON file in this repo
-        required: true
+        description: Path of the job JSON file in this repo (leave empty to use jobs/landscape_en_job.json)
+        required: false
+        default: ""
 
 jobs:
   render:
@@ -38,7 +46,7 @@ jobs:
 
       - name: Render the landscape video
         env:
-          JOB_PATH: ${{ inputs.job }}
+          JOB_PATH: ${{ inputs.job || 'jobs/landscape_en_job.json' }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
           GEMINI_API_KEY_3: ${{ secrets.GEMINI_API_KEY_3 }}
@@ -80,11 +88,11 @@ jobs:
       - name: Tell n8n the job failed
         if: failure()
         env:
-          JOB_PATH: ${{ inputs.job }}
+          JOB_PATH: ${{ inputs.job || 'jobs/landscape_en_job.json' }}
         run: python render_landscape_en.py --notify-failure
 
       - name: Remove the job file
         if: always()
         env:
-          JOB_PATH: ${{ inputs.job }}
+          JOB_PATH: ${{ inputs.job || 'jobs/landscape_en_job.json' }}
         run: git config user.name render-bot && git config user.email render-bot@users.noreply.github.com && git pull --rebase origin main; git rm -f $JOB_PATH; git commit -m 'Remove English landscape job file'; git push; true

@@ -68,7 +68,8 @@ def log(*a):
 def parse_english(raw):
     """English package reader (the Shorts package.parse is Hindi only). Same JSON shape: title, description, optional hashtags and
     voice_style, scenes with narration + image_prompt. Narration is used as written; only a missing final full stop is added.
-    A scene without an image_prompt is allowed (it keeps the previous image). Returns {'scenes', 'voice_style', 'title', 'description'}."""
+    A scene without an image_prompt is allowed (it keeps the previous image). Hashtags are added to the description only when the
+    description does not already contain them. Returns {'scenes', 'voice_style', 'title', 'description'}."""
     try:
         b = json.loads(raw)
     except ValueError as e:
@@ -96,11 +97,13 @@ def parse_english(raw):
     if not re.search(r'[.!?\u2026,;:]["\')\]\u201d\u2019]*$', last):
         scenes[-1]['narration'] = last + '.'
     tags, seen = [], set()
+    low_desc = description.lower()
     for h in (b.get('hashtags') if isinstance(b.get('hashtags'), list) else [])[:10]:
         t = re.sub(r'[^\w]', '', str(h or ''))
         if 2 <= len(t) <= 40 and t.lower() not in seen:
             seen.add(t.lower())
-            tags.append('#' + t)
+            if not re.search('#' + re.escape(t.lower()) + r'(?!\w)', low_desc):
+                tags.append('#' + t)
     if tags:
         description += '\n\n' + ' '.join(tags)
     style = str(b.get('voice_style') or b.get('style_instruction') or b.get('gemini_style') or '').strip()

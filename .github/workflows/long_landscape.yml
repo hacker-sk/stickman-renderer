@@ -2,6 +2,8 @@ name: Long Landscape Video
 
 # YouTube long landscape video (1920x1080) from a package JSON: prepare -> flow -> make -> upload. ENGLISH by default.
 # Start: push jobs/long_package.json (best for 200+ scenes) or Actions > Long Landscape Video > Run workflow and paste the package.
+# Re-run the SAME package without touching it: change jobs/rerun.txt and push (the package file stays identical, so its saved
+# voice and image caches, which are named after the package hash, are still used).
 # Package = same shape as the Shorts package (title, description, scenes with narration + image_prompt, optional hashtags + voice_style), any length.
 #            The narration is plain English (no Devanagari needed, no Latin-letter check). Set the variable LONG_LANGUAGE=hi to make a Hindi video again.
 #
@@ -27,6 +29,7 @@ on:
   push:
     paths:
       - "jobs/long_package.json"
+      - "jobs/rerun.txt"
   workflow_dispatch:
     inputs:
       package:

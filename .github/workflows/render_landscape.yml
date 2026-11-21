@@ -71,31 +71,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release create landscape-video-${{ github.run_number }} output/video.mp4 --title 'Landscape video ${{ github.run_number }}' --notes 'Rendered by run ${{ github.run_id }}' || true
 
-      # YouTube Data API v3 upload (title and description come from the job JSON). Needs the secrets YT_CLIENT_ID, YT_CLIENT_SECRET,
-      # YT_REFRESH_TOKEN of the channel; without them the step just says it was skipped. Variables: YT_UPLOAD=off, YT_PRIVACY (private default),
-      # YT_CATEGORY, YT_LANGUAGE, YT_MADE_FOR_KIDS, YT_TAGS. A failed upload does not fail the job (n8n already got the render result).
-      - name: Upload to YouTube
-        if: success() && vars.YT_UPLOAD != 'off'
-        continue-on-error: true
-        env:
-          JOB_PATH: ${{ inputs.job }}
-          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
-          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
-          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
-          YT_PRIVACY: ${{ vars.YT_PRIVACY || 'private' }}
-          YT_CATEGORY: ${{ vars.YT_CATEGORY || '22' }}
-          YT_LANGUAGE: ${{ vars.YT_LANGUAGE || 'hi' }}
-          YT_MADE_FOR_KIDS: ${{ vars.YT_MADE_FOR_KIDS || 'false' }}
-          YT_TAGS: ${{ vars.YT_TAGS }}
-        run: |
-          python - <<'PY'
-          import json, os
-          p = json.load(open(os.environ['JOB_PATH'], encoding='utf-8'))
-          meta = {'title': p.get('title') or '', 'description': p.get('description') or p.get('youtube_description') or ''}
-          json.dump(meta, open('output/metadata.json', 'w', encoding='utf-8'), ensure_ascii=False)
-          PY
-          python pipeline/youtube_upload.py --video output/video.mp4 --meta output/metadata.json --out output/youtube.json
-
       - name: Tell n8n the job failed
         if: failure()
         env:

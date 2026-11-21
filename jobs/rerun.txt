@@ -2,4 +2,4 @@ Re-run trigger for the Long Landscape Video workflow.
 Change this file and push to start a new run of jobs/long_package.json without editing the package.
 The package file stays identical, so the voice and image caches saved for it (named after its hash) are still used.
 
-last requested: 2026-11-21, run 1 (English voice, Puck)
+last requested: 2026-11-21, run 2 (English voice, Puck; after workflow YAML fix)

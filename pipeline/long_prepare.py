@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Long landscape video, PREPARE step (voice + scene timing + tagged Flow prompts). Reuses pipeline/flow_images.py.
 
-The Shorts voice maker is capped at 178 s per call, so a long script is voiced in LONG chunks of consecutive scenes: about
-LONG_CHUNK_CHARS letters each (default 2000, roughly 2 to 2.5 minutes of speech), which keeps the number of voice calls small.
-If a chunk turns out too long for one call (or fails 3 times) it is split in half automatically and both halves are made, so a big
-chunk never blocks the run. Every chunk is a separate wav kept in <out>/voice_chunks under a hash of its text, so a new run of the same
-package (cache restored by the workflow) only makes the chunks that are still missing. Scene start times come from the forced alignment
-of each chunk (same code as Shorts), chunk start times from the real chunk lengths.
+The Shorts voice code limits one voice call to 178 s (render_hindi.MAX_VOICE_SECONDS, and it speeds the audio up to fit that). For the
+long video this script raises that limit on the loaded module only (LONG_MAX_VOICE_SECONDS, default 900), so render_hindi.py and the
+Shorts workflows are untouched, and voices the script in BIG chunks of consecutive scenes: about LONG_CHUNK_CHARS letters each
+(default 6000, roughly 6 to 7 minutes of speech), so a 20 minute video needs only a few voice calls.
+Safety nets: a chunk whose audio is far too short for its text (cut off by the TTS) or too long, or that fails 3 times, is split in
+half automatically and both halves are made. Every chunk is a separate wav kept in <out>/voice_chunks under a hash of its text, so a new
+run of the same package (cache restored by the workflow) only makes the chunks that are still missing. Scene start times come from the
+forced alignment of each chunk (same code as Shorts; estimated from the length if that fails), chunk start times from the real chunk lengths.
 
 Writes into <out> (default flow-batch/long):
   long_flow.json   the tagged Flow prompts ('[s01] ...'), only scenes that have an image_prompt
@@ -30,7 +32,9 @@ sys.path.insert(0, ROOT)
 
 from pipeline import flow_images as fl  # noqa: E402
 
-CHUNK_CHARS = int(os.environ.get('LONG_CHUNK_CHARS') or 2000)
+CHUNK_CHARS = int(os.environ.get('LONG_CHUNK_CHARS') or 6000)
+MAX_VOICE = float(os.environ.get('LONG_MAX_VOICE_SECONDS') or 900)
+MIN_CHARS_PER_SECOND = 30.0  # faster than any real speech: audio shorter than text/30 means the TTS cut the text off
 VOICE_NAME = 'long_voice.wav'
 META_NAME = 'long_meta.json'
 PROMPTS_NAME = 'long_flow.json'
@@ -64,6 +68,15 @@ def load_rh(style=''):
     except Exception as e:  # noqa
         log('voice description patch not installed: ' + str(e)[:150])
     return rh
+
+
+def get_rh(state, style):
+    if state['rh'] is None:
+        rh = load_rh(style)
+        # render_hindi reads MAX_VOICE_SECONDS at call time, so this lifts the Shorts limit for this process only
+        rh.MAX_VOICE_SECONDS = MAX_VOICE
+        state['rh'] = rh
+    return state['rh']
 
 
 def make_chunks(scenes):
@@ -101,13 +114,13 @@ def do_chunk(idxs, scenes, style, vdir, state):
     dur = 0.0
     for attempt in range(1, 4):
         try:
-            if state['rh'] is None:
-                dur, state['rh'] = fl.make_voice_file(text, wav, style)
-            else:
-                state['rh'].make_voice(text, wav)
-                dur = state['rh'].audio_duration(wav)
-                if dur > state['rh'].MAX_VOICE_SECONDS:
-                    raise RuntimeError('chunk voice is ' + str(int(dur)) + 's, over the limit')
+            rh = get_rh(state, style)
+            rh.make_voice(text, wav)
+            dur = rh.audio_duration(wav)
+            if dur > MAX_VOICE:
+                raise RuntimeError('chunk voice is ' + str(int(dur)) + 's, over the limit')
+            if dur < len(text) / MIN_CHARS_PER_SECOND:
+                raise RuntimeError('chunk voice is only ' + str(int(dur)) + 's for ' + str(len(text)) + ' letters, the TTS cut it off, limit of the model')
             last = None
             break
         except Exception as e:  # noqa

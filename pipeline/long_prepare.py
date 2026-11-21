@@ -10,10 +10,15 @@ half automatically and both halves are made. Every chunk is a separate wav kept 
 run of the same package (cache restored by the workflow) only makes the chunks that are still missing. Scene start times come from the
 forced alignment of each chunk (same code as Shorts; estimated from the length if that fails), chunk start times from the real chunk lengths.
 
+LANGUAGE: the long video is ENGLISH by default (LONG_LANGUAGE=en; set it to hi for a Hindi package). The Shorts code is Hindi only
+(package.parse refuses Latin letters, adds a Devanagari full stop and the #Shorts #Hindi hashtags; align_forced and the WhisperX fallback
+use the Hindi models). For English this script therefore (1) reads the package itself (parse_english) and (2) points the forced
+alignment and the Whisper fallback at the English models, in this process only (apply_language). Nothing in the Shorts code is edited.
+
 Voice of the long video (Shorts keep their own voice from pipeline/voice_patch.py, which is not touched): Gemini voice Puck with the
 reel-narrator delivery style (the same voice and style as the code-video-shorts reels). Override with the env vars LONG_GEMINI_VOICE and
-LONG_GEMINI_STYLE (repo variables of the same names in long_landscape.yml). The voice and style are part of the chunk cache key, so changing
-them never reuses audio made with another voice.
+LONG_GEMINI_STYLE (repo variables of the same names in long_landscape.yml). A voice_style written in the package wins over the default
+style for that video. The voice and style are part of the chunk cache key, so changing them never reuses audio made with another voice.
 
 Writes into <out> (default flow-batch/long):
   long_flow.json   the tagged Flow prompts ('[s01] ...'), only scenes that have an image_prompt
@@ -25,6 +30,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -43,6 +49,10 @@ MIN_CHARS_PER_SECOND = 30.0  # faster than any real speech: audio shorter than t
 VOICE_NAME = 'long_voice.wav'
 META_NAME = 'long_meta.json'
 PROMPTS_NAME = 'long_flow.json'
+MAX_PROMPT = 1900
+
+# Language of the long video: en (default) or hi. Decides the package reader and the alignment models.
+LANG = (os.environ.get('LONG_LANGUAGE') or '').strip().lower() or 'en'
 
 # Voice and delivery style of the long landscape video (same as the code-video-shorts reels).
 LONG_VOICE = (os.environ.get('LONG_GEMINI_VOICE') or '').strip() or 'Puck'
@@ -52,6 +62,100 @@ LONG_STYLE = ' '.join((os.environ.get('LONG_GEMINI_STYLE') or '').split()) or (
 
 def log(*a):
     print('[long_prepare]', *a, flush=True)
+
+
+# ----------------------------------------------------------------------------- English package
+def parse_english(raw):
+    """English package reader (the Shorts package.parse is Hindi only). Same JSON shape: title, description, optional hashtags and
+    voice_style, scenes with narration + image_prompt. Narration is used as written; only a missing final full stop is added.
+    A scene without an image_prompt is allowed (it keeps the previous image). Returns {'scenes', 'voice_style', 'title', 'description'}."""
+    try:
+        b = json.loads(raw)
+    except ValueError as e:
+        raise RuntimeError('package is not valid JSON: ' + str(e)[:120])
+    if not isinstance(b, dict):
+        raise RuntimeError('package must be a JSON object')
+    title = ' '.join(str(b.get('title') or '').split())
+    description = str(b.get('description') or '').strip()
+    if not title:
+        raise RuntimeError('package: title is missing')
+    if not description:
+        raise RuntimeError('package: description is missing')
+    in_scenes = b.get('scenes') if isinstance(b.get('scenes'), list) else []
+    if not in_scenes:
+        raise RuntimeError('package: scenes list is empty')
+    scenes = []
+    for i, s in enumerate(in_scenes):
+        s = s if isinstance(s, dict) else {}
+        n = ' '.join(str(s.get('narration') or '').split())
+        p = str(s.get('image_prompt') or '').strip()
+        if not n:
+            raise RuntimeError('package: scene %d has no narration' % (i + 1))
+        scenes.append({'narration': n, 'image_prompt': p[:MAX_PROMPT]})
+    last = scenes[-1]['narration']
+    if not re.search(r'[.!?\u2026,;:]["\')\]\u201d\u2019]*$', last):
+        scenes[-1]['narration'] = last + '.'
+    tags, seen = [], set()
+    for h in (b.get('hashtags') if isinstance(b.get('hashtags'), list) else [])[:10]:
+        t = re.sub(r'[^\w]', '', str(h or ''))
+        if 2 <= len(t) <= 40 and t.lower() not in seen:
+            seen.add(t.lower())
+            tags.append('#' + t)
+    if tags:
+        description += '\n\n' + ' '.join(tags)
+    style = str(b.get('voice_style') or b.get('style_instruction') or b.get('gemini_style') or '').strip()
+    return {'scenes': scenes, 'voice_style': style, 'title': title[:100], 'description': description}
+
+
+def apply_language(rh):
+    """Point the alignment code at the language of the long video, on the loaded modules of THIS process only (Shorts stay Hindi).
+    render_hindi.whisperx_heard / whisper_heard_fw and align_forced.forced_words are written for Hindi; for any other language they are
+    replaced by the same code with the language (and its default aligner model) swapped in."""
+    if LANG == 'hi':
+        return
+    from pipeline import align_forced
+    orig_forced = align_forced.forced_words
+
+    def forced_words(script_words, dur, voice_path, language=LANG, log=print):
+        return orig_forced(script_words, dur, voice_path, language=language, log=log)
+
+    align_forced.forced_words = forced_words
+
+    def whisperx_heard(audio_path, script_text=''):
+        import whisperx
+        audio = whisperx.load_audio(audio_path)
+        opts = {'condition_on_previous_text': False, 'beam_size': 5, 'initial_prompt': (script_text or None)}
+        model = whisperx.load_model(os.environ.get('WHISPERX_MODEL', 'large-v3-turbo'), 'cpu', compute_type='int8', language=LANG, asr_options=opts)
+        result = model.transcribe(audio, batch_size=8, language=LANG)
+        del model
+        align_model, meta = whisperx.load_align_model(language_code=LANG, device='cpu')
+        aligned = whisperx.align(result['segments'], align_model, meta, audio, 'cpu', return_char_alignments=False)
+        out = []
+        for w in aligned.get('word_segments') or []:
+            t = str(w.get('word') or '').strip()
+            if t and w.get('start') is not None and w.get('end') is not None:
+                out.append((t, float(w['start']), float(w['end'])))
+        if len(out) < 3:
+            raise RuntimeError('WhisperX alignment returned too few words')
+        return out
+
+    def whisper_heard_fw(audio_path, script_text=''):
+        from faster_whisper import WhisperModel
+        model = WhisperModel(os.environ.get('WHISPER_MODEL', 'medium'), device='cpu', compute_type='int8')
+        segs, _ = model.transcribe(audio_path, word_timestamps=True, language=LANG, vad_filter=False,
+                                   condition_on_previous_text=False, beam_size=5, initial_prompt=(script_text or None),
+                                   no_speech_threshold=None)
+        out = []
+        for s in segs:
+            for w in (s.words or []):
+                t = w.word.strip()
+                if t:
+                    out.append((t, float(w.start), float(w.end)))
+        return out
+
+    rh.whisperx_heard = whisperx_heard
+    rh.whisper_heard_fw = whisper_heard_fw
+    log('language ' + LANG + ': forced alignment and the Whisper fallback use the ' + LANG + ' models')
 
 
 def load_rh(style=''):
@@ -67,9 +171,11 @@ def load_rh(style=''):
         voice = {'language': 'hi', 'gemini_voice': 'Iapetus',
                  'gemini_models': ['gemini-3.8-flash-tts', 'gemini-2.5-flash-preview-tts'],
                  'voice_id': 'ibbx9zDYGvLgtYzRbqqG', 'fish_voice_id': '6366ea69a97d41ada9eb855a64e56fba', 'fish_model': 's2.1-pro-free'}
-    # long video voice: Puck + the reel-narrator style (replaces the Shorts voice and its voice description for this process only)
+    # long video voice: Puck + the reel-narrator style (replaces the Shorts voice and its Hindi voice description for this process only).
+    # A voice_style written in the package wins over the default style.
+    voice['language'] = LANG
     voice['gemini_voice'] = LONG_VOICE
-    voice['gemini_style'] = LONG_STYLE
+    voice['gemini_style'] = ' '.join(str(style or '').split()) or LONG_STYLE
     os.environ['PAYLOAD'] = json.dumps(voice, ensure_ascii=False)
     stub = types.ModuleType('render_hindi_overlay')
     stub.STATE = {}
@@ -88,6 +194,7 @@ def get_rh(state, style):
         rh = load_rh(style)
         # render_hindi reads MAX_VOICE_SECONDS at call time, so this lifts the Shorts limit for this process only
         rh.MAX_VOICE_SECONDS = MAX_VOICE
+        apply_language(rh)
         state['rh'] = rh
     return state['rh']
 
@@ -112,7 +219,7 @@ def do_chunk(idxs, scenes, style, vdir, state):
     text = fl.narration_of(sub)
     if not text.strip():
         return [(None, 0.0, [0.0] * len(sub), idxs)]
-    key = hashlib.sha256((LONG_VOICE + '|' + LONG_STYLE + '|' + style + '|' + text).encode('utf-8')).hexdigest()[:16]
+    key = hashlib.sha256((LANG + '|' + LONG_VOICE + '|' + LONG_STYLE + '|' + style + '|' + text).encode('utf-8')).hexdigest()[:16]
     wav, js = os.path.join(vdir, key + '.wav'), os.path.join(vdir, key + '.json')
     if os.path.isfile(wav) and os.path.isfile(js):
         try:
@@ -173,17 +280,22 @@ def main():
     a = ap.parse_args()
     with open(a.package, encoding='utf-8') as fh:
         raw = fh.read().strip()
-    scenes = fl.load_scenes(raw)
+    if LANG == 'hi':
+        scenes = fl.load_scenes(raw)
+        style = fl.voice_style_of(raw)
+        pk = None
+    else:
+        pk = parse_english(raw)
+        scenes, style = pk['scenes'], pk['voice_style']
     items = [i for i, s in enumerate(scenes) if str(s.get('image_prompt') or '').strip()]
     if not scenes or not items or not fl.narration_of(scenes).strip():
         raise RuntimeError('package has no scenes, no image prompts or no narration')
-    style = fl.voice_style_of(raw)
     out = os.path.abspath(a.out)
     vdir = os.path.join(out, 'voice_chunks')
     os.makedirs(vdir, exist_ok=True)
     chunks = make_chunks(scenes)
     log(str(len(scenes)) + ' scenes, ' + str(len(items)) + ' images, ' + str(len(chunks)) + ' voice chunks of about ' + str(CHUNK_CHARS) + ' letters')
-    log('voice: ' + LONG_VOICE + ', style: ' + LONG_STYLE)
+    log('language: ' + LANG + ', voice: ' + LONG_VOICE + ', style: ' + (' '.join(style.split()) or LONG_STYLE) + (' (from the package)' if style else ' (default)'))
     state = {'rh': None}
     starts = [0.0] * len(scenes)
     offset, wavs = 0.0, []
@@ -212,17 +324,20 @@ def main():
         json.dump(prompts, fh, ensure_ascii=False, indent=1)
 
     title, description = '', ''
-    try:
-        from pipeline import package
-        prep = package.parse(raw)['prep']
-        title, description = str(prep.get('title') or ''), str(prep.get('description') or '')
-    except Exception:  # noqa
+    if pk is not None:
+        title, description = pk['title'], pk['description']
+    else:
         try:
-            d = json.loads(raw)
-            if isinstance(d, dict):
-                title, description = str(d.get('title') or ''), str(d.get('description') or '')
+            from pipeline import package
+            prep = package.parse(raw)['prep']
+            title, description = str(prep.get('title') or ''), str(prep.get('description') or '')
         except Exception:  # noqa
-            pass
+            try:
+                d = json.loads(raw)
+                if isinstance(d, dict):
+                    title, description = str(d.get('title') or ''), str(d.get('description') or '')
+            except Exception:  # noqa
+                pass
     meta = {'scene_count': len(scenes), 'narration_sha': fl.sha(fl.narration_of(scenes)),
             'items': [{'index': i, 'prompt_no': p} for p, i in enumerate(items, 1)],
             'starts': [round(s, 2) for s in starts], 'voice_seconds': round(total, 2), 'title': title, 'description': description}

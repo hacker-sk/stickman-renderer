@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Long landscape video, PREPARE step (voice + scene timing + tagged Flow prompts). Reuses pipeline/flow_images.py.
 
-The Shorts voice maker is capped at 178 s, so a long script is voiced in CHUNKS of consecutive scenes (about LONG_CHUNK_CHARS letters
-each, default 900, roughly one minute). Every chunk is a separate wav kept in <out>/voice_chunks under a hash of its text, so a new run
-of the same package (cache restored by the workflow) only makes the chunks that are still missing. Scene start times come from the
-forced alignment of each chunk (same code as Shorts), chunk start times from the real chunk lengths.
+The Shorts voice maker is capped at 178 s per call, so a long script is voiced in LONG chunks of consecutive scenes: about
+LONG_CHUNK_CHARS letters each (default 2000, roughly 2 to 2.5 minutes of speech), which keeps the number of voice calls small.
+If a chunk turns out too long for one call (or fails 3 times) it is split in half automatically and both halves are made, so a big
+chunk never blocks the run. Every chunk is a separate wav kept in <out>/voice_chunks under a hash of its text, so a new run of the same
+package (cache restored by the workflow) only makes the chunks that are still missing. Scene start times come from the forced alignment
+of each chunk (same code as Shorts), chunk start times from the real chunk lengths.
 
 Writes into <out> (default flow-batch/long):
   long_flow.json   the tagged Flow prompts ('[s01] ...'), only scenes that have an image_prompt
@@ -28,7 +30,7 @@ sys.path.insert(0, ROOT)
 
 from pipeline import flow_images as fl  # noqa: E402
 
-CHUNK_CHARS = int(os.environ.get('LONG_CHUNK_CHARS') or 900)
+CHUNK_CHARS = int(os.environ.get('LONG_CHUNK_CHARS') or 2000)
 VOICE_NAME = 'long_voice.wav'
 META_NAME = 'long_meta.json'
 PROMPTS_NAME = 'long_flow.json'
@@ -79,11 +81,11 @@ def make_chunks(scenes):
 
 
 def do_chunk(idxs, scenes, style, vdir, state):
-    """(wav path or None, seconds, [start second of each scene inside the chunk])."""
+    """List of (wav path or None, seconds, [start second of each scene inside it], scene indexes). One entry, or two or more when split."""
     sub = [scenes[i] for i in idxs]
     text = fl.narration_of(sub)
     if not text.strip():
-        return None, 0.0, [0.0] * len(sub)
+        return [(None, 0.0, [0.0] * len(sub), idxs)]
     key = hashlib.sha256((style + '|' + text).encode('utf-8')).hexdigest()[:16]
     wav, js = os.path.join(vdir, key + '.wav'), os.path.join(vdir, key + '.json')
     if os.path.isfile(wav) and os.path.isfile(js):
@@ -92,7 +94,7 @@ def do_chunk(idxs, scenes, style, vdir, state):
                 d = json.load(fh)
             if len(d['bounds']) == len(sub) and os.path.getsize(wav) > 10000:
                 log('chunk ' + key + ' reused from cache (' + str(round(d['dur'], 1)) + 's)')
-                return wav, float(d['dur']), [float(b) for b in d['bounds']]
+                return [(wav, float(d['dur']), [float(b) for b in d['bounds']], idxs)]
         except Exception:  # noqa
             pass
     last = None
@@ -105,15 +107,21 @@ def do_chunk(idxs, scenes, style, vdir, state):
                 state['rh'].make_voice(text, wav)
                 dur = state['rh'].audio_duration(wav)
                 if dur > state['rh'].MAX_VOICE_SECONDS:
-                    raise RuntimeError('chunk voice is ' + str(int(dur)) + 's, over the limit, lower LONG_CHUNK_CHARS')
+                    raise RuntimeError('chunk voice is ' + str(int(dur)) + 's, over the limit')
             last = None
             break
         except Exception as e:  # noqa
             last = e
             log('chunk voice attempt ' + str(attempt) + ' failed: ' + str(e)[:200])
+            if 'limit' in str(e).lower() and len(idxs) > 1:
+                break  # too long for one call: no point retrying, split below
             time.sleep(10 * attempt)
     if last is not None:
-        raise RuntimeError('voice chunk failed after 3 tries: ' + str(last)[:200])
+        if len(idxs) > 1:
+            h = len(idxs) // 2
+            log('splitting a chunk of ' + str(len(idxs)) + ' scenes into ' + str(h) + ' + ' + str(len(idxs) - h))
+            return do_chunk(idxs[:h], scenes, style, vdir, state) + do_chunk(idxs[h:], scenes, style, vdir, state)
+        raise RuntimeError('voice failed after 3 tries: ' + str(last)[:200])
     try:
         _w, bounds, aligner = fl.real_timing(state['rh'], sub, wav, dur)
     except Exception as e:  # noqa
@@ -123,7 +131,7 @@ def do_chunk(idxs, scenes, style, vdir, state):
     with open(js, 'w', encoding='utf-8') as fh:
         json.dump({'dur': dur, 'bounds': [round(b, 3) for b in bounds], 'aligner': aligner}, fh)
     log('chunk ' + key + ' made (' + str(round(dur, 1)) + 's, timing ' + aligner + ')')
-    return wav, dur, [float(b) for b in bounds]
+    return [(wav, dur, [float(b) for b in bounds], idxs)]
 
 
 def probe_duration(path):
@@ -148,17 +156,17 @@ def main():
     vdir = os.path.join(out, 'voice_chunks')
     os.makedirs(vdir, exist_ok=True)
     chunks = make_chunks(scenes)
-    log(str(len(scenes)) + ' scenes, ' + str(len(items)) + ' images, ' + str(len(chunks)) + ' voice chunks')
+    log(str(len(scenes)) + ' scenes, ' + str(len(items)) + ' images, ' + str(len(chunks)) + ' voice chunks of about ' + str(CHUNK_CHARS) + ' letters')
     state = {'rh': None}
     starts = [0.0] * len(scenes)
     offset, wavs = 0.0, []
     for idxs in chunks:
-        wav, dur, bounds = do_chunk(idxs, scenes, style, vdir, state)
-        for k, i in enumerate(idxs):
-            starts[i] = offset + bounds[k]
-        if wav:
-            wavs.append(wav)
-        offset += dur
+        for wav, dur, bounds, ix in do_chunk(idxs, scenes, style, vdir, state):
+            for k, i in enumerate(ix):
+                starts[i] = offset + bounds[k]
+            if wav:
+                wavs.append(wav)
+            offset += dur
     voice_out = os.path.join(out, VOICE_NAME)
     if len(wavs) == 1:
         shutil.copyfile(wavs[0], voice_out)
@@ -193,7 +201,7 @@ def main():
             'starts': [round(s, 2) for s in starts], 'voice_seconds': round(total, 2), 'title': title, 'description': description}
     with open(os.path.join(out, META_NAME), 'w', encoding='utf-8') as fh:
         json.dump(meta, fh, ensure_ascii=False, indent=1)
-    log('done: voice ' + str(round(total, 1)) + 's, ' + str(len(prompts)) + ' Flow prompts')
+    log('done: voice ' + str(round(total, 1)) + 's in ' + str(len(wavs)) + ' calls, ' + str(len(prompts)) + ' Flow prompts')
     return 0
 
 

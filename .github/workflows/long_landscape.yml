@@ -5,6 +5,9 @@ name: Long Landscape Video
 # Package = same shape as the Hindi Shorts package (title, description, scenes with narration + image_prompt), any length.
 #
 #   prepare: voice in big chunks (kept per chunk in a cache), word timing per chunk, scene start times, scene-tagged Flow prompts.
+#            Voice: Gemini voice Puck with the reel-narrator style ("an engaging young guy narrating a viral social media reel: upbeat,
+#            fast-paced, hyped and curious, friendly, with a punchy hook"), the same as the code-video-shorts reels. Shorts are not affected.
+#            Variables: LONG_GEMINI_VOICE (default Puck), LONG_GEMINI_STYLE (default: the style above).
 #   flow:    ALL images are made here (Google Flow, landscape 16:9), ALL prompts in ONE session unless an error stops it. Pass 1 may wait up to
 #            240 minutes for that session (GitHub's hard limit for a job is 360 minutes, so this is close to the maximum). Every image goes
 #            into a cache folder as soon as the session hands it over. Missing/failed images are generated again (rounds in the step, then
@@ -103,6 +106,8 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           FISH_API_KEY: ${{ secrets.FISH_API_KEY }}
+          LONG_GEMINI_VOICE: ${{ vars.LONG_GEMINI_VOICE || 'Puck' }}
+          LONG_GEMINI_STYLE: ${{ vars.LONG_GEMINI_STYLE || 'an engaging young guy narrating a viral social media reel: upbeat, fast-paced, hyped and curious, friendly, with a punchy hook' }}
         run: python pipeline/long_prepare.py --package /tmp/package.json --out flow-batch/long
 
       - name: Save voice chunks

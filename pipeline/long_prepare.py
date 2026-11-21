@@ -10,6 +10,11 @@ half automatically and both halves are made. Every chunk is a separate wav kept 
 run of the same package (cache restored by the workflow) only makes the chunks that are still missing. Scene start times come from the
 forced alignment of each chunk (same code as Shorts; estimated from the length if that fails), chunk start times from the real chunk lengths.
 
+Voice of the long video (Shorts keep their own voice from pipeline/voice_patch.py, which is not touched): Gemini voice Puck with the
+reel-narrator delivery style (the same voice and style as the code-video-shorts reels). Override with the env vars LONG_GEMINI_VOICE and
+LONG_GEMINI_STYLE (repo variables of the same names in long_landscape.yml). The voice and style are part of the chunk cache key, so changing
+them never reuses audio made with another voice.
+
 Writes into <out> (default flow-batch/long):
   long_flow.json   the tagged Flow prompts ('[s01] ...'), only scenes that have an image_prompt
   long_meta.json   scene_count, items (scene index -> prompt number), starts (start second of EVERY scene), voice_seconds, title, description
@@ -39,6 +44,11 @@ VOICE_NAME = 'long_voice.wav'
 META_NAME = 'long_meta.json'
 PROMPTS_NAME = 'long_flow.json'
 
+# Voice and delivery style of the long landscape video (same as the code-video-shorts reels).
+LONG_VOICE = (os.environ.get('LONG_GEMINI_VOICE') or '').strip() or 'Puck'
+LONG_STYLE = ' '.join((os.environ.get('LONG_GEMINI_STYLE') or '').split()) or (
+    'an engaging young guy narrating a viral social media reel: upbeat, fast-paced, hyped and curious, friendly, with a punchy hook')
+
 
 def log(*a):
     print('[long_prepare]', *a, flush=True)
@@ -57,6 +67,9 @@ def load_rh(style=''):
         voice = {'language': 'hi', 'gemini_voice': 'Iapetus',
                  'gemini_models': ['gemini-3.8-flash-tts', 'gemini-2.5-flash-preview-tts'],
                  'voice_id': 'ibbx9zDYGvLgtYzRbqqG', 'fish_voice_id': '6366ea69a97d41ada9eb855a64e56fba', 'fish_model': 's2.1-pro-free'}
+    # long video voice: Puck + the reel-narrator style (replaces the Shorts voice and its voice description for this process only)
+    voice['gemini_voice'] = LONG_VOICE
+    voice['gemini_style'] = LONG_STYLE
     os.environ['PAYLOAD'] = json.dumps(voice, ensure_ascii=False)
     stub = types.ModuleType('render_hindi_overlay')
     stub.STATE = {}
@@ -99,7 +112,7 @@ def do_chunk(idxs, scenes, style, vdir, state):
     text = fl.narration_of(sub)
     if not text.strip():
         return [(None, 0.0, [0.0] * len(sub), idxs)]
-    key = hashlib.sha256((style + '|' + text).encode('utf-8')).hexdigest()[:16]
+    key = hashlib.sha256((LONG_VOICE + '|' + LONG_STYLE + '|' + style + '|' + text).encode('utf-8')).hexdigest()[:16]
     wav, js = os.path.join(vdir, key + '.wav'), os.path.join(vdir, key + '.json')
     if os.path.isfile(wav) and os.path.isfile(js):
         try:
@@ -170,6 +183,7 @@ def main():
     os.makedirs(vdir, exist_ok=True)
     chunks = make_chunks(scenes)
     log(str(len(scenes)) + ' scenes, ' + str(len(items)) + ' images, ' + str(len(chunks)) + ' voice chunks of about ' + str(CHUNK_CHARS) + ' letters')
+    log('voice: ' + LONG_VOICE + ', style: ' + LONG_STYLE)
     state = {'rh': None}
     starts = [0.0] * len(scenes)
     offset, wavs = 0.0, []

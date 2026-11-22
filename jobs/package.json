@@ -1,58 +1,62 @@
 {
-  "title": "बुरे वक़्त में जो रुका, वही अपना है",
-  "description": "अच्छे दिनों में सब साथ होते हैं, पर बुरे वक़्त में जो चुपचाप तुम्हारे साथ खड़ा रहा, वही असली अपना है। आज उस इंसान को याद करो और उसे यह भेजो। कमेंट में बताओ, तुम्हारे लिए वो कौन है?",
+  "title": "पापा की चप्पल",
+  "description": "पापा ने सबके जूते बदले, पर अपनी घिसी चप्पल कभी नहीं बदली। आज कमाने लगे हो, तो एक बार उन्हें नई चप्पल दिला दो। इसे अपने पापा को भेजो। कमेंट में लिखो, पापा, आप सबसे अच्छे हो।",
   "mood": "emotional",
   "hashtags": [
-    "#अपने",
-    "#रिश्ते",
-    "#सच्चादोस्त",
-    "#हिंदीक्वोट्स",
-    "#ज़िंदगीकासच",
+    "#पापा",
+    "#पिता",
+    "#माँबाप",
+    "#हिंदीकहानी",
     "#भावनाएं",
+    "#ज़िंदगीकासच",
     "#Reels"
   ],
   "tags": [
-    "बुरा वक़्त",
-    "सच्चा साथ",
-    "रिश्ते",
-    "दोस्ती",
-    "हिंदी क्वोट्स",
-    "emotional quotes",
+    "पापा",
+    "पिता का प्यार",
+    "मिडिल क्लास",
+    "परिवार",
+    "भावुक कहानी",
+    "emotional story",
     "stickman",
     "reels"
   ],
   "hook": {
-    "line": "बुरे वक़्त में जो रुका, वही अपना है",
-    "focus": "रुका"
+    "line": "पापा की चप्पल आख़िरी बार कब बदली थी?",
+    "focus": "चप्पल"
   },
   "art_style": "sketchbook_doodle",
-  "voice_style": "Soft, warm and sincere male reel narrator: a slow, calm, steady pace, light and a little wistful on the lines about the crowd that leaves, lower and tender on the lines about the one who stayed in the dark, and ending with a grateful, gentle warmth, like a truth said quietly to a close friend.",
+  "voice_style": "Soft, warm and sincere male reel narrator: a calm, steady pace, quietly curious on the opening question, gentle and tender on the lines about what papa did silently, lower and moved on the line about never saying he was tired, ending with a warm, grateful push to go and do it today, like a truth said quietly to a close friend.",
   "random_bg": false,
   "bgm": true,
   "scenes": [
     {
-      "narration": "अच्छे दिनों में तो पूरी भीड़ साथ चलती है,",
-      "image_prompt": "Wide view of a festive evening courtyard party where a stick-figure man with a round white head, simple expressive face, thin black stick limbs, a bright orange shirt and navy trousers stands smiling in the middle of a big crowd of stick-figure people with round white heads in mustard, maroon, green and purple clothes who clap, laugh and cheer around him, strings of fairy lights and paper lanterns overhead, a table with sweets and tea glasses, marigold garlands, a warm glowing sky, loose pencil hatching. Hand-drawn 2D storybook illustration in a charming sketchbook-doodle style, simple expressive stick-figure characters with bold irregular black ink outlines, detailed natural environments, loose hand-drawn linework, watercolor and colored-pencil textures, subtle paper grain, warm earthy tones, golden-hour cinematic lighting, soft atmospheric shading, highly detailed backgrounds, consistent character design, no text, logos, or watermarks."
+      "narration": "तुम्हें याद है, पापा ने अपने लिए आख़िरी बार नई चप्पल कब ली थी?",
+      "image_prompt": "Close view of a modest middle-class Indian house doorway in the morning where a stick-figure father with a round white head, simple kind tired face, a small grey moustache, thin black stick limbs, a cream half-sleeve shirt and khaki trousers stands on the threshold looking down at his feet, wearing a badly worn, thin brown rubber chappal stitched with a thick thread, a steel tiffin box in his hand, a cycle leaning on the wall, a potted tulsi plant, a brass bell, soft sunrise light, loose pencil hatching. Hand-drawn 2D storybook illustration in a charming sketchbook-doodle style, simple expressive stick-figure characters with bold irregular black ink outlines, detailed natural environments, loose hand-drawn linework, watercolor and colored-pencil textures, subtle paper grain, warm earthy tones, golden-hour cinematic lighting, soft atmospheric shading, highly detailed backgrounds, consistent character design, no text, logos, or watermarks."
     },
     {
-      "narration": "पर जब वक़्त बदलता है, तो भीड़ अचानक गायब हो जाती है।",
-      "image_prompt": "Wide view of the same courtyard at cold dusk, now almost empty: a stick-figure man with a round white head, simple expressive face, thin black stick limbs, a bright orange shirt and navy trousers stands alone in the centre with sagging shoulders and a lost worried face, a few small stick-figure silhouettes with round white heads walking away through the gate with their backs turned, toppled chairs, a fallen marigold garland, dimmed paper lanterns, long cold shadows, a grey-blue sky with one thin orange stripe on the horizon, loose pencil hatching. Hand-drawn 2D storybook illustration in a charming sketchbook-doodle style, simple expressive stick-figure characters with bold irregular black ink outlines, detailed natural environments, loose hand-drawn linework, watercolor and colored-pencil textures, subtle paper grain, warm earthy tones, golden-hour cinematic lighting, soft atmospheric shading, highly detailed backgrounds, consistent character design, no text, logos, or watermarks."
+      "narration": "तुम्हारे स्कूल के जूते हर साल नए आते थे, और उनकी चप्पल हर साल सिल जाती थी।",
+      "image_prompt": "Medium view inside a small shoe repair corner at a street market where a stick-figure father with a round white head, simple kind face, a small grey moustache, thin black stick limbs, a cream half-sleeve shirt and khaki trousers sits on a low stool getting his old brown chappal stitched by an old cobbler stick-figure with a round white head and a turban, while beside him a small stick-figure boy with a round white head, thin black stick limbs, a red school shirt and navy shorts proudly wears a shiny new black school shoe, a shoebox open on the ground, a row of old shoes hanging, a tin shed roof, warm afternoon light, loose pencil hatching. Hand-drawn 2D storybook illustration in a charming sketchbook-doodle style, simple expressive stick-figure characters with bold irregular black ink outlines, detailed natural environments, loose hand-drawn linework, watercolor and colored-pencil textures, subtle paper grain, warm earthy tones, golden-hour cinematic lighting, soft atmospheric shading, highly detailed backgrounds, consistent character design, no text, logos, or watermarks."
     },
     {
-      "narration": "उस अँधेरे में जो इंसान बिना कुछ कहे तुम्हारे पास बैठा रहा,",
-      "image_prompt": "Medium view inside a small dark room at night where a stick-figure man with a round white head, simple expressive face, thin black stick limbs, a bright orange shirt and navy trousers sits on the floor against a bed with his head bowed and hands in his hair, and right beside him shoulder to shoulder sits his stick-figure friend with a round white head, thin black stick limbs, a teal shirt and brown trousers, calm and silent, a steaming glass of tea placed gently in front of the man, a dim table lamp, a window with rain streaks, a wall calendar, a worn rug, loose pencil hatching. Hand-drawn 2D storybook illustration in a charming sketchbook-doodle style, simple expressive stick-figure characters with bold irregular black ink outlines, detailed natural environments, loose hand-drawn linework, watercolor and colored-pencil textures, subtle paper grain, warm earthy tones, golden-hour cinematic lighting, soft atmospheric shading, highly detailed backgrounds, consistent character design, no text, logos, or watermarks."
+      "narration": "फ़ीस के दिन वो मुस्कुराकर कहते थे, चिंता मत कर, सब हो जाएगा।",
+      "image_prompt": "Medium view of a small living room in the evening where a stick-figure father with a round white head, a small grey moustache, thin black stick limbs, a cream half-sleeve shirt and khaki trousers kneels beside a small stick-figure boy with a round white head, a red school shirt and navy shorts who holds a school notice paper with a worried face, the father smiling warmly with a gentle hand on the boy's shoulder, a ceiling fan, a steel almirah, a calendar on the wall, a school bag on a plastic chair, warm lamp light, loose pencil hatching. Hand-drawn 2D storybook illustration in a charming sketchbook-doodle style, simple expressive stick-figure characters with bold irregular black ink outlines, detailed natural environments, loose hand-drawn linework, watercolor and colored-pencil textures, subtle paper grain, warm earthy tones, golden-hour cinematic lighting, soft atmospheric shading, highly detailed backgrounds, consistent character design, no text, logos, or watermarks."
     },
     {
-      "narration": "जिसने तुम्हें सलाह नहीं, सहारा दिया,",
-      "image_prompt": "Wide view of a rainy village road at night where a stick-figure friend with a round white head, thin black stick limbs, a teal shirt and brown trousers holds a glowing lantern in one hand and with the other arm helps a stick-figure man with a round white head, simple expressive face, thin black stick limbs, a bright orange shirt and navy trousers stand up from the muddy ground, the man tearful but relieved, soft puddles reflecting the lantern light, a tall bare tree, a mud-brick wall, drifting rain lines, loose pencil hatching. Hand-drawn 2D storybook illustration in a charming sketchbook-doodle style, simple expressive stick-figure characters with bold irregular black ink outlines, detailed natural environments, loose hand-drawn linework, watercolor and colored-pencil textures, subtle paper grain, warm earthy tones, golden-hour cinematic lighting, soft atmospheric shading, highly detailed backgrounds, consistent character design, no text, logos, or watermarks."
+      "narration": "और रात को चुपचाप बैठकर हिसाब लगाते थे, ताकि सुबह तुम्हें कुछ पता न चले।",
+      "image_prompt": "Medium view of a dim kitchen corner at midnight where a stick-figure father with a round white head, tired worried face, a small grey moustache, thin black stick limbs, a cream half-sleeve shirt and khaki trousers sits alone on the floor under a single hanging bulb counting a small pile of crumpled notes and writing numbers in an old pocket diary, an empty steel plate and a glass of water beside him, in the next room through a doorway a small stick-figure boy with a round white head sleeps peacefully under a blanket, a pressure cooker on the stove, moths around the bulb, deep blue night shadows, loose pencil hatching. Hand-drawn 2D storybook illustration in a charming sketchbook-doodle style, simple expressive stick-figure characters with bold irregular black ink outlines, detailed natural environments, loose hand-drawn linework, watercolor and colored-pencil textures, subtle paper grain, warm earthy tones, golden-hour cinematic lighting, soft atmospheric shading, highly detailed backgrounds, consistent character design, no text, logos, or watermarks."
     },
     {
-      "narration": "वो रिश्ता खून का हो या न हो, वही तुम्हारा सबसे बड़ा अपना है।",
-      "image_prompt": "Wide view of a country path at sunrise where a stick-figure man with a round white head, simple expressive face, thin black stick limbs, a bright orange shirt and navy trousers and his stick-figure friend with a round white head, thin black stick limbs, a teal shirt and brown trousers walk side by side with arms around each other's shoulders, both with calm warm smiles, a large glowing red heart floating gently above them joined to their chests by a thin golden thread, golden wheat fields, a lone banyan tree, a few birds in a peach sky, loose pencil hatching. Hand-drawn 2D storybook illustration in a charming sketchbook-doodle style, simple expressive stick-figure characters with bold irregular black ink outlines, detailed natural environments, loose hand-drawn linework, watercolor and colored-pencil textures, subtle paper grain, warm earthy tones, golden-hour cinematic lighting, soft atmospheric shading, highly detailed backgrounds, consistent character design, no text, logos, or watermarks."
+      "narration": "उन्होंने कभी नहीं कहा कि वो थक गए हैं, क्योंकि उन्हें लगता था कि पापा कभी थकते नहीं।",
+      "image_prompt": "Wide view of a crowded evening bus stop where a stick-figure father with a round white head, tired but smiling face, a small grey moustache, thin black stick limbs, a cream half-sleeve shirt, khaki trousers and a heavy cloth bag on his shoulder walks home with slightly bent back, sweat on his forehead, his worn brown chappal visible, while in the distance a small stick-figure boy with a round white head, a red school shirt and navy shorts runs toward him with open arms, an orange setting sun, a tea stall, a bus, electric wires with a few birds, loose pencil hatching. Hand-drawn 2D storybook illustration in a charming sketchbook-doodle style, simple expressive stick-figure characters with bold irregular black ink outlines, detailed natural environments, loose hand-drawn linework, watercolor and colored-pencil textures, subtle paper grain, warm earthy tones, golden-hour cinematic lighting, soft atmospheric shading, highly detailed backgrounds, consistent character design, no text, logos, or watermarks."
     },
     {
-      "narration": "आज उसे बता दो कि वो तुम्हारे लिए कितना ज़रूरी है। इसे उस इंसान को भेजो जो तुम्हारे बुरे वक़्त में रुका था।",
-      "image_prompt": "Close view at a wooden doorway at dusk where a stick-figure man with a round white head, simple expressive face, thin black stick limbs, a bright orange shirt and navy trousers offers a small glowing red heart in both open hands to his stick-figure friend with a round white head, thin black stick limbs, a teal shirt and brown trousers, the friend surprised with a moved teary smile, warm lamp light spilling from the doorway, a potted tulsi plant, a hanging brass lantern, a threshold with a small rangoli, soft evening sky, loose pencil hatching. Hand-drawn 2D storybook illustration in a charming sketchbook-doodle style, simple expressive stick-figure characters with bold irregular black ink outlines, detailed natural environments, loose hand-drawn linework, watercolor and colored-pencil textures, subtle paper grain, warm earthy tones, golden-hour cinematic lighting, soft atmospheric shading, highly detailed backgrounds, consistent character design, no text, logos, or watermarks."
+      "narration": "आज जब तुम कमाने लगे हो, तो एक बार उन्हें अपने हाथों से नई चप्पल पहना दो।",
+      "image_prompt": "Close view of the same modest house doorway in the evening where a grown stick-figure young man with a round white head, simple kind face, thin black stick limbs, a blue shirt and black trousers kneels on one knee and gently slides a new pair of sturdy brown leather chappals onto the feet of his stick-figure father with a round white head, a small grey moustache, a cream half-sleeve shirt and khaki trousers, the father surprised and speechless with moist eyes, an open shoebox with tissue paper on the floor, a potted tulsi plant, a hanging brass lantern, warm lamp light spilling from the door, loose pencil hatching. Hand-drawn 2D storybook illustration in a charming sketchbook-doodle style, simple expressive stick-figure characters with bold irregular black ink outlines, detailed natural environments, loose hand-drawn linework, watercolor and colored-pencil textures, subtle paper grain, warm earthy tones, golden-hour cinematic lighting, soft atmospheric shading, highly detailed backgrounds, consistent character design, no text, logos, or watermarks."
+    },
+    {
+      "narration": "क्योंकि उनके लिए सबसे बड़ा तोहफ़ा चप्पल नहीं, तुम्हारा याद रखना है। इसे अपने पापा को भेजो।",
+      "image_prompt": "Wide view of a peaceful rooftop at golden sunset where a stick-figure father with a round white head, a small grey moustache, a cream half-sleeve shirt, khaki trousers and new brown chappals and his grown stick-figure son with a round white head, a blue shirt and black trousers sit side by side on a cot with arms around each other's shoulders, both with warm calm smiles, a large glowing red heart floating gently above them joined to their chests by a thin golden thread, two steel glasses of tea on a small stool, drying clothes on a line, distant rooftops with water tanks, a few kites in a peach sky, loose pencil hatching. Hand-drawn 2D storybook illustration in a charming sketchbook-doodle style, simple expressive stick-figure characters with bold irregular black ink outlines, detailed natural environments, loose hand-drawn linework, watercolor and colored-pencil textures, subtle paper grain, warm earthy tones, golden-hour cinematic lighting, soft atmospheric shading, highly detailed backgrounds, consistent character design, no text, logos, or watermarks."
     }
   ]
 }

@@ -23,9 +23,17 @@ name: Long Landscape Video
 #            cache and the next run of the SAME package continues from it.
 #   make:    only joins images + voice into output/video.mp4. No image generation, no voice, no music, no transitions, no pan/zoom, no captions.
 #            Uploads to the free temporary host (like Shorts) and keeps a release + artifact copy. output/metadata.json has title + description.
-#   upload:  YouTube Data API v3 upload. Needs the secrets YT_CLIENT_ID, YT_CLIENT_SECRET, YT_REFRESH_TOKEN (scope youtube.upload); without them
-#            the job just says it was skipped. Variables: YT_UPLOAD=off (no upload), YT_PRIVACY (private default | unlisted | public),
-#            YT_CATEGORY (22), YT_LANGUAGE (en videos; a Hindi video always uploads as hi), YT_MADE_FOR_KIDS (false), YT_TAGS (comma separated).
+#   upload:  SEPARATE accounts per language. Hindi videos never use the English credentials and the other way round; a language whose
+#            credentials are not set is simply skipped. Shorts are not affected (they keep BUFFER_TOKEN and their own channels).
+#            YouTube Data API v3 (scope youtube.upload):
+#              en: secrets YT_CLIENT_ID, YT_CLIENT_SECRET, YT_REFRESH_TOKEN | hi: secrets YT_HI_CLIENT_ID, YT_HI_CLIENT_SECRET, YT_HI_REFRESH_TOKEN
+#              Variables: YT_UPLOAD=off (no API upload), YT_PRIVACY / YT_HI_PRIVACY (private default | unlisted | public), YT_CATEGORY (22),
+#              YT_LANGUAGE (en videos; a Hindi video always uploads as hi), YT_MADE_FOR_KIDS (false), YT_TAGS / YT_HI_TAGS (comma separated).
+#            Buffer (YouTube post, needs the temporary-host link of the video):
+#              en: secret BUFFER_LONG_EN_TOKEN + variable BUFFER_LONG_EN_YOUTUBE_CHANNEL_ID
+#              hi: secret BUFFER_LONG_HI_TOKEN + variable BUFFER_LONG_HI_YOUTUBE_CHANNEL_ID
+#              BUFFER_LONG=off turns the Buffer post off. If one language has BOTH the API upload and Buffer pointing at the same YouTube
+#              channel the video is posted twice, so set up only one of them per channel.
 # Variables: FLOW_LONG_ASPECT (default landscape), FLOW_LONG_CHUNK (prompts per Flow session, default 0 = all in one), FLOW_MODEL.
 
 on:
@@ -347,7 +355,7 @@ jobs:
 
   upload:
     needs: [prepare, make]
-    if: needs.make.result == 'success' && vars.YT_UPLOAD != 'off'
+    if: needs.make.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
@@ -366,14 +374,24 @@ jobs:
           name: long-video
           path: output
 
-      - name: Upload to YouTube
+      - name: Upload to YouTube (API v3, own credentials per language)
+        if: vars.YT_UPLOAD != 'off'
         env:
-          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
-          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
-          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
-          YT_PRIVACY: ${{ vars.YT_PRIVACY || 'private' }}
+          YT_CLIENT_ID: ${{ needs.prepare.outputs.lang == 'hi' && secrets.YT_HI_CLIENT_ID || (needs.prepare.outputs.lang != 'hi' && secrets.YT_CLIENT_ID) || '' }}
+          YT_CLIENT_SECRET: ${{ needs.prepare.outputs.lang == 'hi' && secrets.YT_HI_CLIENT_SECRET || (needs.prepare.outputs.lang != 'hi' && secrets.YT_CLIENT_SECRET) || '' }}
+          YT_REFRESH_TOKEN: ${{ needs.prepare.outputs.lang == 'hi' && secrets.YT_HI_REFRESH_TOKEN || (needs.prepare.outputs.lang != 'hi' && secrets.YT_REFRESH_TOKEN) || '' }}
+          YT_PRIVACY: ${{ needs.prepare.outputs.lang == 'hi' && (vars.YT_HI_PRIVACY || vars.YT_PRIVACY || 'private') || vars.YT_PRIVACY || 'private' }}
           YT_CATEGORY: ${{ vars.YT_CATEGORY || '22' }}
           YT_LANGUAGE: ${{ needs.prepare.outputs.lang == 'hi' && 'hi' || vars.YT_LANGUAGE || 'en' }}
           YT_MADE_FOR_KIDS: ${{ vars.YT_MADE_FOR_KIDS || 'false' }}
-          YT_TAGS: ${{ vars.YT_TAGS }}
+          YT_TAGS: ${{ needs.prepare.outputs.lang == 'hi' && (vars.YT_HI_TAGS || vars.YT_TAGS) || vars.YT_TAGS }}
         run: python pipeline/youtube_upload.py --video output/video.mp4 --meta output/metadata.json --out output/youtube.json
+
+      - name: Schedule on Buffer (YouTube, own Buffer per language)
+        if: vars.BUFFER_LONG != 'off'
+        continue-on-error: true
+        env:
+          LONG_LANGUAGE: ${{ needs.prepare.outputs.lang }}
+          BUFFER_TOKEN: ${{ needs.prepare.outputs.lang == 'hi' && secrets.BUFFER_LONG_HI_TOKEN || (needs.prepare.outputs.lang != 'hi' && secrets.BUFFER_LONG_EN_TOKEN) || '' }}
+          BUFFER_YOUTUBE_CHANNEL_ID: ${{ needs.prepare.outputs.lang == 'hi' && vars.BUFFER_LONG_HI_YOUTUBE_CHANNEL_ID || (needs.prepare.outputs.lang != 'hi' && vars.BUFFER_LONG_EN_YOUTUBE_CHANNEL_ID) || '' }}
+        run: python pipeline/long_buffer.py

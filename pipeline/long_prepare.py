@@ -10,15 +10,15 @@ half automatically and both halves are made. Every chunk is a separate wav kept 
 run of the same package (cache restored by the workflow) only makes the chunks that are still missing. Scene start times come from the
 forced alignment of each chunk (same code as Shorts; estimated from the length if that fails), chunk start times from the real chunk lengths.
 
-LANGUAGE: the long video is ENGLISH by default (LONG_LANGUAGE=en; set it to hi for a Hindi package). The Shorts code is Hindi only
-(package.parse refuses Latin letters, adds a Devanagari full stop and the #Shorts #Hindi hashtags; align_forced and the WhisperX fallback
-use the Hindi models). For English this script therefore (1) reads the package itself (parse_english) and (2) points the forced
-alignment and the Whisper fallback at the English models, in this process only (apply_language). Nothing in the Shorts code is edited.
-
-Voice of the long video (Shorts keep their own voice from pipeline/voice_patch.py, which is not touched): Gemini voice Puck with the
-reel-narrator delivery style (the same voice and style as the code-video-shorts reels). Override with the env vars LONG_GEMINI_VOICE and
-LONG_GEMINI_STYLE (repo variables of the same names in long_landscape.yml). A voice_style written in the package wins over the default
-style for that video. The voice and style are part of the chunk cache key, so changing them never reuses audio made with another voice.
+LANGUAGE (LONG_LANGUAGE, set by the workflow from the package field "language", the run input or the repo variable): en (default) or hi.
+  en  English video. Package read by parse_package, English alignment models, voice Gemini Puck with the reel-narrator style
+      (LONG_GEMINI_VOICE / LONG_GEMINI_STYLE).
+  hi  Hindi video. The narration may be Devanagari OR Hindi in English letters (Hinglish), or a mix. Voice: Gemini Iapetus with the Hindi
+      voice description + delivery style of the Shorts (pipeline/voice_patch.py); for Hinglish text the style also tells the voice to read it
+      as native Hindi. Override with LONG_HI_GEMINI_VOICE / LONG_HI_GEMINI_STYLE. Timing: WhisperX large-v3-turbo, language hi, Hindi
+      wav2vec2 aligner (theainerd/Wav2Vec2-large-xlsr-hindi). Devanagari text: forced alignment of the known words. Hinglish text (the Hindi
+      aligner cannot read Latin letters): the voice is transcribed by WhisperX (hi) and the script words are spread over the heard words.
+The Shorts code is never edited; the language switch only changes this process.
 
 Writes into <out> (default flow-batch/long):
   long_flow.json   the tagged Flow prompts ('[s01] ...'), only scenes that have an image_prompt
@@ -51,25 +51,51 @@ META_NAME = 'long_meta.json'
 PROMPTS_NAME = 'long_flow.json'
 MAX_PROMPT = 1900
 
-# Language of the long video: en (default) or hi. Decides the package reader and the alignment models.
+# Language of the long video: en (default) or hi. Decides the package reader, the voice and the alignment models.
 LANG = (os.environ.get('LONG_LANGUAGE') or '').strip().lower() or 'en'
+if LANG.startswith('hi'):
+    LANG = 'hi'
 
-# Voice and delivery style of the long landscape video (same as the code-video-shorts reels).
-LONG_VOICE = (os.environ.get('LONG_GEMINI_VOICE') or '').strip() or 'Puck'
-LONG_STYLE = ' '.join((os.environ.get('LONG_GEMINI_STYLE') or '').split()) or (
-    'an engaging young guy narrating a viral social media reel: upbeat, fast-paced, hyped and curious, friendly, with a punchy hook')
+if LANG == 'hi':
+    # Hindi: Iapetus + the Shorts Hindi description/style unless overridden ('' style = the Hindi default built in hindi_style()).
+    LONG_VOICE = (os.environ.get('LONG_HI_GEMINI_VOICE') or '').strip() or 'Iapetus'
+    LONG_STYLE = ' '.join((os.environ.get('LONG_HI_GEMINI_STYLE') or '').split())
+else:
+    # English: Puck + the reel-narrator style (same as the code-video-shorts reels).
+    LONG_VOICE = (os.environ.get('LONG_GEMINI_VOICE') or '').strip() or 'Puck'
+    LONG_STYLE = ' '.join((os.environ.get('LONG_GEMINI_STYLE') or '').split()) or (
+        'an engaging young guy narrating a viral social media reel: upbeat, fast-paced, hyped and curious, friendly, with a punchy hook')
+
+SCRIPT = {'latin': False}  # set in main(): True when the narration is Hindi written in English letters
+
+HI_LATIN_NOTE = ('The script is Hindi written in English letters (Hinglish): read it as natural spoken Hindi with a native Hindi accent '
+                 'and Hindi pronunciation, never as English.')
+HI_GENERIC_STYLE = ('Adapt emotional delivery naturally to the script: engaging for stories, heartfelt for emotion, inspiring for motivation. '
+                    'Keep a steady, natural pace with brief pauses between complete thoughts, and emphasize key words through vocal '
+                    'projection and pitch without slowing down.')
+HI_FALLBACK_DESC = ('Smooth, clear Indian male voice in his early 30s with a natural, native Hindi accent. Balanced lower-middle baritone '
+                    'timbre with warm chest resonance, close-mic studio proximity, and high, forward broadcast loudness.')
 
 
 def log(*a):
     print('[long_prepare]', *a, flush=True)
 
 
-# ----------------------------------------------------------------------------- English package
-def parse_english(raw):
-    """English package reader (the Shorts package.parse is Hindi only). Same JSON shape: title, description, optional hashtags and
-    voice_style, scenes with narration + image_prompt. Narration is used as written; only a missing final full stop is added.
-    A scene without an image_prompt is allowed (it keeps the previous image). Hashtags are added to the description only when the
-    description does not already contain them. Returns {'scenes', 'voice_style', 'title', 'description'}."""
+def is_latin(text):
+    """True when most letters of the text are Latin (Hindi written in English letters)."""
+    letters = [c for c in str(text) if c.isalpha()]
+    if not letters:
+        return False
+    return sum(1 for c in letters if c.isascii()) / float(len(letters)) > 0.5
+
+
+# ----------------------------------------------------------------------------- package (any language)
+def parse_package(raw):
+    """Package reader for the long video (the Shorts package.parse is Devanagari only). Same JSON shape: title, description, optional
+    hashtags and voice_style, scenes with narration + image_prompt. Narration is used as written (English, Devanagari Hindi or Hindi in
+    English letters); only a missing final full stop is added. A scene without an image_prompt is allowed (it keeps the previous image).
+    Hashtags are added to the description only when it does not already contain them.
+    Returns {'scenes', 'voice_style', 'title', 'description'}."""
     try:
         b = json.loads(raw)
     except ValueError as e:
@@ -94,8 +120,8 @@ def parse_english(raw):
             raise RuntimeError('package: scene %d has no narration' % (i + 1))
         scenes.append({'narration': n, 'image_prompt': p[:MAX_PROMPT]})
     last = scenes[-1]['narration']
-    if not re.search(r'[.!?\u2026,;:]["\')\]\u201d\u2019]*$', last):
-        scenes[-1]['narration'] = last + '.'
+    if not re.search(r'[.!?\u2026\u0964\u0965,;:]["\')\]\u201d\u2019]*$', last):
+        scenes[-1]['narration'] = last + ('\u0964' if re.search(r'[\u0900-\u097F]', last) else '.')
     tags, seen = [], set()
     low_desc = description.lower()
     for h in (b.get('hashtags') if isinstance(b.get('hashtags'), list) else [])[:10]:
@@ -110,11 +136,16 @@ def parse_english(raw):
     return {'scenes': scenes, 'voice_style': style, 'title': title[:100], 'description': description}
 
 
+parse_english = parse_package  # old name
+
+
 def apply_language(rh):
     """Point the alignment code at the language of the long video, on the loaded modules of THIS process only (Shorts stay Hindi).
-    render_hindi.whisperx_heard / whisper_heard_fw and align_forced.forced_words are written for Hindi; for any other language they are
-    replaced by the same code with the language (and its default aligner model) swapped in."""
+    render_hindi.whisperx_heard / whisper_heard_fw and align_forced.forced_words are written for Hindi, which is exactly what a Hindi
+    long video needs, so for hi nothing is replaced. For any other language they are replaced by the same code with the language
+    (and its default aligner model) swapped in."""
     if LANG == 'hi':
+        log('language hi: WhisperX large-v3-turbo (hi) with the Hindi wav2vec2 aligner, faster-whisper hi as fallback')
         return
     from pipeline import align_forced
     orig_forced = align_forced.forced_words
@@ -161,6 +192,22 @@ def apply_language(rh):
     log('language ' + LANG + ': forced alignment and the Whisper fallback use the ' + LANG + ' models')
 
 
+def hindi_style(style):
+    """Gemini style text of a Hindi long video: the Shorts Hindi voice description + delivery style (package voice_style, else
+    LONG_HI_GEMINI_STYLE, else the Shorts default). For Hinglish text the Devanagari wording is dropped and a note says to read it as Hindi."""
+    s = ' '.join(str(style or '').split()) or LONG_STYLE
+    try:
+        from pipeline import voice_patch as vp
+    except Exception:  # noqa
+        vp = None
+    if SCRIPT['latin']:
+        desc = (vp.DESC if vp else HI_FALLBACK_DESC).replace(' and crisp Devanagari articulation', '')
+        return desc + ' ' + HI_LATIN_NOTE + ' ' + (s or HI_GENERIC_STYLE)
+    if vp:
+        return vp.style_for(s)
+    return HI_FALLBACK_DESC + ' ' + (s or HI_GENERIC_STYLE)
+
+
 def load_rh(style=''):
     """The render_hindi module, set up exactly like pipeline/flow_images.make_voice_file does (also used by long_make for the upload)."""
     work = os.path.abspath('flow_work')
@@ -174,11 +221,13 @@ def load_rh(style=''):
         voice = {'language': 'hi', 'gemini_voice': 'Iapetus',
                  'gemini_models': ['gemini-3.8-flash-tts', 'gemini-2.5-flash-preview-tts'],
                  'voice_id': 'ibbx9zDYGvLgtYzRbqqG', 'fish_voice_id': '6366ea69a97d41ada9eb855a64e56fba', 'fish_model': 's2.1-pro-free'}
-    # long video voice: Puck + the reel-narrator style (replaces the Shorts voice and its Hindi voice description for this process only).
-    # A voice_style written in the package wins over the default style.
+    # long video voice (replaces the Shorts voice for this process only). A voice_style written in the package wins over the default style.
     voice['language'] = LANG
     voice['gemini_voice'] = LONG_VOICE
-    voice['gemini_style'] = ' '.join(str(style or '').split()) or LONG_STYLE
+    if LANG == 'hi':
+        voice['gemini_style'] = hindi_style(style)
+    else:
+        voice['gemini_style'] = ' '.join(str(style or '').split()) or LONG_STYLE
     os.environ['PAYLOAD'] = json.dumps(voice, ensure_ascii=False)
     stub = types.ModuleType('render_hindi_overlay')
     stub.STATE = {}
@@ -216,13 +265,47 @@ def make_chunks(scenes):
     return chunks
 
 
+def latin_timing(rh, scenes, voice_path, dur):
+    """Timing for Hindi written in English letters. The Hindi aligner only knows Devanagari, so the voice is transcribed by WhisperX (hi)
+    and the script words are spread over the heard words (script word k -> heard word k*m/n), which keeps the real pauses and speed.
+    Scene starts snap to real pauses like Shorts. Returns (words, bounds, aligner) like fl.real_timing."""
+    script_words = fl.narration_of(scenes).split()
+    heard = rh.whisper_heard(voice_path, '')
+    if len(heard) < 3:
+        raise RuntimeError('Whisper heard too few words')
+    n, m = len(script_words), len(heard)
+    words = []
+    for k, w in enumerate(script_words):
+        h = heard[min(m - 1, k * m // n)]
+        words.append((w, float(h[1]), float(h[2])))
+    firsts, wi = [], 0
+    for s in scenes[:-1]:
+        wi += len(str(s.get('narration') or '').split())
+        firsts.append(wi)
+    sil = rh.find_silences(voice_path)
+    bounds = [0.0]
+    for wi in firsts:
+        b = words[min(wi, n - 1)][1]
+        cand = [x for x in sil if abs(x - b) <= 0.1]
+        if cand:
+            b = min(cand, key=lambda x: abs(x - b))
+        bounds.append(max(bounds[-1] + 0.8, b))
+    return words, bounds, 'whisper-hi'
+
+
+def chunk_timing(rh, sub, wav, dur):
+    if LANG == 'hi' and is_latin(fl.narration_of(sub)):
+        return latin_timing(rh, sub, wav, dur)
+    return fl.real_timing(rh, sub, wav, dur)
+
+
 def do_chunk(idxs, scenes, style, vdir, state):
     """List of (wav path or None, seconds, [start second of each scene inside it], scene indexes). One entry, or two or more when split."""
     sub = [scenes[i] for i in idxs]
     text = fl.narration_of(sub)
     if not text.strip():
         return [(None, 0.0, [0.0] * len(sub), idxs)]
-    key = hashlib.sha256((LANG + '|' + LONG_VOICE + '|' + LONG_STYLE + '|' + style + '|' + text).encode('utf-8')).hexdigest()[:16]
+    key = hashlib.sha256((LANG + '|' + LONG_VOICE + '|' + LONG_STYLE + '|' + style + '|' + str(SCRIPT['latin']) + '|' + text).encode('utf-8')).hexdigest()[:16]
     wav, js = os.path.join(vdir, key + '.wav'), os.path.join(vdir, key + '.json')
     if os.path.isfile(wav) and os.path.isfile(js):
         try:
@@ -259,7 +342,7 @@ def do_chunk(idxs, scenes, style, vdir, state):
             return do_chunk(idxs[:h], scenes, style, vdir, state) + do_chunk(idxs[h:], scenes, style, vdir, state)
         raise RuntimeError('voice failed after 3 tries: ' + str(last)[:200])
     try:
-        _w, bounds, aligner = fl.real_timing(state['rh'], sub, wav, dur)
+        _w, bounds, aligner = chunk_timing(state['rh'], sub, wav, dur)
     except Exception as e:  # noqa
         log('timing of the chunk failed, estimated from its length: ' + str(e)[:150])
         st = fl.scene_starts(sub, dur)
@@ -283,13 +366,9 @@ def main():
     a = ap.parse_args()
     with open(a.package, encoding='utf-8') as fh:
         raw = fh.read().strip()
-    if LANG == 'hi':
-        scenes = fl.load_scenes(raw)
-        style = fl.voice_style_of(raw)
-        pk = None
-    else:
-        pk = parse_english(raw)
-        scenes, style = pk['scenes'], pk['voice_style']
+    pk = parse_package(raw)
+    scenes, style = pk['scenes'], pk['voice_style']
+    SCRIPT['latin'] = LANG == 'hi' and is_latin(fl.narration_of(scenes))
     items = [i for i, s in enumerate(scenes) if str(s.get('image_prompt') or '').strip()]
     if not scenes or not items or not fl.narration_of(scenes).strip():
         raise RuntimeError('package has no scenes, no image prompts or no narration')
@@ -298,7 +377,8 @@ def main():
     os.makedirs(vdir, exist_ok=True)
     chunks = make_chunks(scenes)
     log(str(len(scenes)) + ' scenes, ' + str(len(items)) + ' images, ' + str(len(chunks)) + ' voice chunks of about ' + str(CHUNK_CHARS) + ' letters')
-    log('language: ' + LANG + ', voice: ' + LONG_VOICE + ', style: ' + (' '.join(style.split()) or LONG_STYLE) + (' (from the package)' if style else ' (default)'))
+    log('language: ' + LANG + (' (Hindi in English letters)' if SCRIPT['latin'] else '') + ', voice: ' + LONG_VOICE + ', style: ' +
+        (' '.join(style.split()) or LONG_STYLE or '(Hindi default)') + (' (from the package)' if style else ' (default)'))
     state = {'rh': None}
     starts = [0.0] * len(scenes)
     offset, wavs = 0.0, []
@@ -326,24 +406,9 @@ def main():
     with open(os.path.join(out, PROMPTS_NAME), 'w', encoding='utf-8') as fh:
         json.dump(prompts, fh, ensure_ascii=False, indent=1)
 
-    title, description = '', ''
-    if pk is not None:
-        title, description = pk['title'], pk['description']
-    else:
-        try:
-            from pipeline import package
-            prep = package.parse(raw)['prep']
-            title, description = str(prep.get('title') or ''), str(prep.get('description') or '')
-        except Exception:  # noqa
-            try:
-                d = json.loads(raw)
-                if isinstance(d, dict):
-                    title, description = str(d.get('title') or ''), str(d.get('description') or '')
-            except Exception:  # noqa
-                pass
     meta = {'scene_count': len(scenes), 'narration_sha': fl.sha(fl.narration_of(scenes)),
             'items': [{'index': i, 'prompt_no': p} for p, i in enumerate(items, 1)],
-            'starts': [round(s, 2) for s in starts], 'voice_seconds': round(total, 2), 'title': title, 'description': description}
+            'starts': [round(s, 2) for s in starts], 'voice_seconds': round(total, 2), 'title': pk['title'], 'description': pk['description']}
     with open(os.path.join(out, META_NAME), 'w', encoding='utf-8') as fh:
         json.dump(meta, fh, ensure_ascii=False, indent=1)
     log('done: voice ' + str(round(total, 1)) + 's in ' + str(len(wavs)) + ' calls, ' + str(len(prompts)) + ' Flow prompts')

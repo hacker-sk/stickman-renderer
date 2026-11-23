@@ -1,18 +1,21 @@
 name: Long Landscape Video
 
-# YouTube long landscape video (1920x1080) from a package JSON: prepare -> flow -> make -> upload. ENGLISH by default.
+# YouTube long landscape video (1920x1080) from a package JSON: prepare -> flow -> make -> upload. ENGLISH or HINDI.
 # Start: push jobs/long_package.json (best for 200+ scenes) or Actions > Long Landscape Video > Run workflow and paste the package.
 # Re-run the SAME package without touching it: change jobs/rerun.txt and push (the package file stays identical, so its saved
 # voice and image caches, which are named after the package hash, are still used).
 # Package = same shape as the Shorts package (title, description, scenes with narration + image_prompt, optional hashtags + voice_style), any length.
-#            The narration is plain English (no Devanagari needed, no Latin-letter check). Set the variable LONG_LANGUAGE=hi to make a Hindi video again.
+#
+# LANGUAGE (en or hi), first match wins: the package field "language" ("hi" or "en"), the run input "language", the variable LONG_LANGUAGE, else en.
+#   en  English: plain English narration, voice Gemini Puck with the reel-narrator style, English alignment models.
+#   hi  Hindi: narration in Devanagari OR Hindi in English letters (Hinglish) OR mixed. Voice Gemini Iapetus with the Shorts Hindi voice
+#       description + style (a voice_style in the package wins), Whisper/WhisperX language hi with the Hindi aligner, YouTube language hi.
+#       Hinglish narration is read as native Hindi; its scene timing comes from WhisperX hearing the voice (the Hindi aligner reads Devanagari only).
 #
 #   prepare: voice in big chunks (kept per chunk in a cache), word timing per chunk, scene start times, scene-tagged Flow prompts.
-#            Voice: Gemini voice Puck with the reel-narrator style ("an engaging young guy narrating a viral social media reel: upbeat,
-#            fast-paced, hyped and curious, friendly, with a punchy hook"), the same as the code-video-shorts reels. Shorts are not affected.
-#            English: the package is read by the English reader in pipeline/long_prepare.py, and the word timing uses the English alignment models.
-#            Variables: LONG_LANGUAGE (default en), LONG_GEMINI_VOICE (default Puck), LONG_GEMINI_STYLE (default: the style above;
-#            a voice_style written in the package wins for that video).
+#            Variables (en): LONG_GEMINI_VOICE (default Puck), LONG_GEMINI_STYLE (default: the reel-narrator style).
+#            Variables (hi): LONG_HI_GEMINI_VOICE (default Iapetus), LONG_HI_GEMINI_STYLE (default: the Shorts Hindi style).
+#            A voice_style written in the package wins for that video. Shorts are not affected.
 #   flow:    ALL images are made here (Google Flow, landscape 16:9), ALL prompts in ONE session unless an error stops it. Pass 1 may wait up to
 #            240 minutes for that session (GitHub's hard limit for a job is 360 minutes, so this is close to the maximum). Every image goes
 #            into a cache folder as soon as the session hands it over. Missing/failed images are generated again (rounds in the step, then
@@ -22,7 +25,7 @@ name: Long Landscape Video
 #            Uploads to the free temporary host (like Shorts) and keeps a release + artifact copy. output/metadata.json has title + description.
 #   upload:  YouTube Data API v3 upload. Needs the secrets YT_CLIENT_ID, YT_CLIENT_SECRET, YT_REFRESH_TOKEN (scope youtube.upload); without them
 #            the job just says it was skipped. Variables: YT_UPLOAD=off (no upload), YT_PRIVACY (private default | unlisted | public),
-#            YT_CATEGORY (22), YT_LANGUAGE (default: LONG_LANGUAGE, else en), YT_MADE_FOR_KIDS (false), YT_TAGS (comma separated).
+#            YT_CATEGORY (22), YT_LANGUAGE (en videos; a Hindi video always uploads as hi), YT_MADE_FOR_KIDS (false), YT_TAGS (comma separated).
 # Variables: FLOW_LONG_ASPECT (default landscape), FLOW_LONG_CHUNK (prompts per Flow session, default 0 = all in one), FLOW_MODEL.
 
 on:
@@ -34,6 +37,10 @@ on:
     inputs:
       package:
         description: "Package JSON (title, description, scenes with narration + image_prompt). Leave empty to use jobs/long_package.json"
+        required: false
+        default: ""
+      language:
+        description: "Language: en or hi (empty = the package field language, else the variable LONG_LANGUAGE, else en)"
         required: false
         default: ""
 
@@ -50,6 +57,7 @@ jobs:
     timeout-minutes: 150
     outputs:
       vid: ${{ steps.pkg.outputs.vid }}
+      lang: ${{ steps.pkg.outputs.lang }}
     steps:
       - uses: actions/checkout@v4
 
@@ -57,6 +65,8 @@ jobs:
         id: pkg
         env:
           PACKAGE_INPUT: ${{ inputs.package }}
+          LANG_INPUT: ${{ inputs.language }}
+          LANG_VAR: ${{ vars.LONG_LANGUAGE }}
         run: |
           if [ "$GITHUB_EVENT_NAME" = "push" ] || [ -z "$PACKAGE_INPUT" ]; then
             [ -f jobs/long_package.json ] && cp jobs/long_package.json /tmp/package.json
@@ -65,6 +75,21 @@ jobs:
           fi
           if [ ! -s /tmp/package.json ]; then echo "::error::No package (push jobs/long_package.json or paste it)"; exit 1; fi
           echo "vid=$(sha256sum /tmp/package.json | cut -c1-16)" >> "$GITHUB_OUTPUT"
+          LANGV=$(python3 - <<'PY'
+          import json, os
+          l = ''
+          try:
+              d = json.load(open('/tmp/package.json', encoding='utf-8'))
+              if isinstance(d, dict):
+                  l = str(d.get('language') or d.get('lang') or '')
+          except Exception:
+              pass
+          l = (l or os.environ.get('LANG_INPUT') or os.environ.get('LANG_VAR') or 'en').strip().lower()
+          print('hi' if (l.startswith('hi') or 'hindi' in l or 'hinglish' in l) else 'en')
+          PY
+          )
+          echo "lang=$LANGV" >> "$GITHUB_OUTPUT"
+          echo "Language: $LANGV"
 
       - uses: actions/setup-python@v5
         with:
@@ -91,7 +116,7 @@ jobs:
           path: |
             ~/.cache/huggingface
             ~/.cache/torch
-          key: whisperx-large-v3-turbo-${{ vars.LONG_LANGUAGE || 'en' }}-v3
+          key: whisperx-large-v3-turbo-${{ steps.pkg.outputs.lang }}-v3
 
       - name: Restore voice chunks of this package
         uses: actions/cache/restore@v4
@@ -112,9 +137,11 @@ jobs:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           FISH_API_KEY: ${{ secrets.FISH_API_KEY }}
-          LONG_LANGUAGE: ${{ vars.LONG_LANGUAGE || 'en' }}
+          LONG_LANGUAGE: ${{ steps.pkg.outputs.lang }}
           LONG_GEMINI_VOICE: ${{ vars.LONG_GEMINI_VOICE || 'Puck' }}
           LONG_GEMINI_STYLE: "${{ vars.LONG_GEMINI_STYLE || 'an engaging young guy narrating a viral social media reel: upbeat, fast-paced, hyped and curious, friendly, with a punchy hook' }}"
+          LONG_HI_GEMINI_VOICE: ${{ vars.LONG_HI_GEMINI_VOICE }}
+          LONG_HI_GEMINI_STYLE: ${{ vars.LONG_HI_GEMINI_STYLE }}
         run: python pipeline/long_prepare.py --package /tmp/package.json --out flow-batch/long
 
       - name: Save voice chunks
@@ -295,7 +322,7 @@ jobs:
       - name: Make the video (join only)
         id: make
         env:
-          LONG_LANGUAGE: ${{ vars.LONG_LANGUAGE || 'en' }}
+          LONG_LANGUAGE: ${{ needs.prepare.outputs.lang }}
         run: python pipeline/long_make.py --meta flow_in/prep/long_meta.json --voice flow_in/prep/long_voice.wav --images flow_in/images --out output
 
       - name: Upload the video
@@ -319,7 +346,7 @@ jobs:
           gh release list --limit 100 --json tagName --jq '.[10:][].tagName' | grep '^long-video-' | xargs -r -I{} gh release delete {} --yes --cleanup-tag || true
 
   upload:
-    needs: make
+    needs: [prepare, make]
     if: needs.make.result == 'success' && vars.YT_UPLOAD != 'off'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -346,7 +373,7 @@ jobs:
           YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
           YT_PRIVACY: ${{ vars.YT_PRIVACY || 'private' }}
           YT_CATEGORY: ${{ vars.YT_CATEGORY || '22' }}
-          YT_LANGUAGE: ${{ vars.YT_LANGUAGE || vars.LONG_LANGUAGE || 'en' }}
+          YT_LANGUAGE: ${{ needs.prepare.outputs.lang == 'hi' && 'hi' || vars.YT_LANGUAGE || 'en' }}
           YT_MADE_FOR_KIDS: ${{ vars.YT_MADE_FOR_KIDS || 'false' }}
           YT_TAGS: ${{ vars.YT_TAGS }}
         run: python pipeline/youtube_upload.py --video output/video.mp4 --meta output/metadata.json --out output/youtube.json

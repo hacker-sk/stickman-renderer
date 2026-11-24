@@ -3,8 +3,8 @@ name: Hindi Shorts
 # Hindi portrait Shorts, fully on GitHub Actions: topic -> script -> image prompts -> render -> Buffer.
 # Manual run (GitHub Mobile): Actions > Hindi Shorts > Run workflow, then fill in an idea OR a finished script (or leave both empty).
 # Package from Claude chat: pushing jobs/package.json starts a run that uses it as the package input (renders and posts to Buffer).
-# Scheduled run: every 3.5 hours between 10:00 and 22:00 IST. It only runs when the repository variable
-# SHORTS_SCHEDULE_ENABLED is "true", so it stays off until the n8n schedule has been switched off.
+# Scheduled run: every 3.5 hours between 10:00 and 22:00 IST. The schedule is ALWAYS ON (it no longer depends on the
+# SHORTS_SCHEDULE_ENABLED variable). To stop it, disable the workflow in the Actions tab or remove the schedule block below.
 # Art style: pick one of the six prebuilt styles, or leave "random" (the default). A chat package can also carry its own
 # "art_style"; when neither a package style nor a chosen style exists (scheduled runs too), one style is picked at random.
 #
@@ -270,7 +270,7 @@ jobs:
 
   make:
     needs: [prepare, flow]
-    if: ${{ !cancelled() && (github.event_name != 'schedule' || vars.SHORTS_SCHEDULE_ENABLED == 'true') }}
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     permissions:

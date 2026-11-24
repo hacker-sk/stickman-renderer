@@ -20,9 +20,8 @@
 - [ ] 2. Script saved (02_script.md)
 - [ ] 3. Voice / delivery style decided
 - [ ] 4. Image prompts saved (03_image_prompts.json)
-- [ ] 5. Payload assembled (04_payload.json)
-- [ ] 6. Sent to workflow / dispatched
-- [ ] 7. Verified, marked done
+- [ ] 5. Final package assembled from the saved files and written once into jobs/package.json or jobs/long_package.json (starts the run; Hindi shorts only when the user says so)
+- [ ] 6. Verified, marked done
 
 ## Decisions made
 - 

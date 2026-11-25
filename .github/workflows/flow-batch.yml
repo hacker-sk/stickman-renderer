@@ -58,11 +58,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - name: Download ZAPI Flow extension (only for the extension runner)
+      - name: Download ZAPI Flow extension
         run: |
-          # Which runner: flow-batch/runner.txt (run_flow_direct.js = no extension; run_flow.js or no file = ZAPI extension runner).
-          RUNNER=$(cat flow-batch/runner.txt 2>/dev/null || echo run_flow.js)
-          if [ "$RUNNER" = "run_flow_direct.js" ]; then echo "Direct runner - the ZAPI extension is not needed, download skipped"; exit 0; fi
           EXT_ID=debadkiomlbdambamdpdlgdkgnedcjil
           DEST=flow-batch/extension/zapi-flow
           if [ ! -f "$DEST/manifest.json" ]; then
@@ -95,10 +92,7 @@ jobs:
           FLOW_ASPECT: ${{ inputs.aspect }}
           FLOW_COUNT: ${{ inputs.count }}
           FLOW_MODEL: ${{ inputs.model }}
-        run: |
-          RUNNER=$(cat runner.txt 2>/dev/null || echo run_flow.js)
-          echo "Flow runner: $RUNNER"
-          xvfb-run -a --server-args="-screen 0 1440x900x24" node "$RUNNER"
+        run: xvfb-run -a --server-args="-screen 0 1440x900x24" node run_flow.js
       - name: Save refreshed Flow session
         if: always() && hashFiles('flow-batch/session/cookies.json') != ''
         uses: actions/cache/save@v4

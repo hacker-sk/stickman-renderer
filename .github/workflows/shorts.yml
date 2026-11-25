@@ -19,8 +19,6 @@ name: Hindi Shorts
 #            2 times in the same session), matches every image to its prompt through Flow's own
 #            media ids, saves it as scene_NN.<ext>, retries scenes that have no usable image, and uploads the images + a manifest as
 #            the "flow-images" artifact. The browser's small history files are cached between runs (flow-history-* cache).
-#            Which runner is used: flow-batch/runner.txt (run_flow_direct.js = every prompt typed into Flow's own box, no extension;
-#            run_flow.js = the ZAPI extension runner described above; no file = run_flow.js).
 #   make:    always runs afterwards (also when prepare or flow failed). Reuses the prepared voice and word timing only when the
 #            narration hash matches (otherwise it makes its own voice and runs its own Whisper), gives each scene its scene_NN image,
 #            and the normal providers (IMAGE_PROVIDER_ORDER, Cloudflare first ...) make every image that is missing.
@@ -259,11 +257,7 @@ jobs:
           # run_flow.js then backs off and retries the missing scenes at most 2 times (time permitting), then the images are collected.
           # The step cap is a little longer so collection and upload still finish.
           sed -i 's/"timeoutMinutes": *[0-9]*/"timeoutMinutes": 10/' config.json
-          # Which runner: flow-batch/runner.txt (run_flow_direct.js = type each prompt into Flow's own box, no extension;
-          # run_flow.js = the ZAPI extension runner). A missing file means run_flow.js.
-          RUNNER=$(cat runner.txt 2>/dev/null || echo run_flow.js)
-          echo "Flow runner: $RUNNER"
-          xvfb-run -a --server-args="-screen 0 1440x900x24" node "$RUNNER"
+          xvfb-run -a --server-args="-screen 0 1440x900x24" node run_flow.js
 
       - name: Save refreshed Flow session
         if: always() && hashFiles('flow-batch/session/cookies.json') != ''

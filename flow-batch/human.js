@@ -1,8 +1,11 @@
-// Human-like input layer for the Google Flow page (never the ZAPI extension page).
+// Human-like input layer for the Google Flow page (never the ZAPI extension page's own clicks).
 // Loaded once from flow_match.js via install(). It patches chromium.launchPersistentContext so every page gets:
 //   - Locator.click / Page.click moved along a curved, jittery mouse path with small pauses
 //   - a one-time "fresh Library" step right after the Flow project loads (see fresh_library.js)
-// Switch off: FLOW_HUMAN=off (everything) or FLOW_FRESH_LIBRARY=off (only the library step).
+//   - a one-time browsing-history warm-up in the same browser, before Flow opens (warmHistory below)
+//   - a one-time "Random delay" 10-25 sec setup in the ZAPI extension panel, right after it opens (see ext_delay.js)
+// Switch off: FLOW_HUMAN=off (everything), FLOW_FRESH_LIBRARY=off (only the library step), FLOW_HISTORY=off (only the history
+// warm-up), FLOW_RANDOM_DELAY=off (only the delay setup). Delay range: FLOW_DELAY_MIN / FLOW_DELAY_MAX (default 10 / 25).
 const { chromium } = require("playwright");
 
 const rand = (a, b) => a + Math.random() * (b - a);
@@ -78,7 +81,32 @@ function patchProtos(page) {
   }
 }
 
+// One-time browsing-history warm-up in the same browser, before Flow opens: a few ordinary sites with a pause and some mouse
+// movement on each, so the profile is not completely empty. Runs without cookies (the Flow login is added afterwards).
+// Best effort: a site that does not load is skipped, nothing here can stop the run.
+async function warmHistory(ctx) {
+  if (process.env.FLOW_HISTORY === "off") return;
+  const sites = ["https://www.google.com/", "https://en.wikipedia.org/wiki/Main_Page", "https://www.youtube.com/"];
+  let page = null;
+  try {
+    page = await ctx.newPage();
+    for (const u of sites) {
+      try {
+        await page.goto(u, { waitUntil: "domcontentloaded", timeout: 20000 });
+        await pause(1500, 3500);
+        await wander(page);
+        await pause(800, 2000);
+      } catch (e) { /* skip this site */ }
+    }
+    console.log("Browsing history warm-up done (FLOW_HISTORY=off to skip)");
+  } catch (e) {
+    console.log("::warning::History warm-up skipped: " + String(e && e.message).slice(0, 120));
+  }
+  try { if (page && ctx.pages().length > 1) await page.close(); } catch (e) {}
+}
+
 const lib = { done: false };
+const extDelay = { done: false };
 let patched = false;
 function hookPage(page) {
   if (!patched) { patched = true; patchProtos(page); }
@@ -91,6 +119,15 @@ function hookPage(page) {
       } catch (e) {
         console.log("::warning::Fresh library step failed: " + String(e && e.message).slice(0, 160));
         lib.done = true; // never create a second library after a half-finished attempt
+      }
+    }
+    // The ZAPI extension panel: set the Random delay fields once, before the queue is started.
+    if (!extDelay.done && /^chrome-extension:/.test(String(url)) && process.env.FLOW_RANDOM_DELAY !== "off") {
+      extDelay.done = true;
+      try {
+        await require("./ext_delay").applyRandomDelay(page, { moveTo, pause, rand });
+      } catch (e) {
+        console.log("::warning::Random delay step failed: " + String(e && e.message).slice(0, 160));
       }
     }
     return r;
@@ -106,6 +143,7 @@ function install() {
     const ctx = await launch(...args);
     ctx.pages().forEach(hookPage);
     ctx.on("page", hookPage);
+    await warmHistory(ctx);
     return ctx;
   };
   console.log("Human input layer on (FLOW_HUMAN=off to disable)");

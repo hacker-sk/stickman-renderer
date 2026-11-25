@@ -15,9 +15,10 @@ name: Hindi Shorts
 #            prompts as the "flow-prep" artifact.
 #   flow:    only the browser work, in ONE Flow session (one browser launch, one login). Downloads "flow-prep", then run_flow.js
 #            generates the scene images with Google Flow (ZAPI FLOW extension, same setup as flow-batch.yml, 10 minute wait cap; it also
-#            stops at once when Flow shows "We noticed some unusual activity"), matches every image to its prompt through Flow's own
+#            stops at once when Flow shows "We noticed some unusual activity" and then backs off and retries the missing scenes at most
+#            2 times in the same session), matches every image to its prompt through Flow's own
 #            media ids, saves it as scene_NN.<ext>, retries scenes that have no usable image, and uploads the images + a manifest as
-#            the "flow-images" artifact.
+#            the "flow-images" artifact. The browser's small history files are cached between runs (flow-history-* cache).
 #   make:    always runs afterwards (also when prepare or flow failed). Reuses the prepared voice and word timing only when the
 #            narration hash matches (otherwise it makes its own voice and runs its own Whisper), gives each scene its scene_NN image,
 #            and the normal providers (IMAGE_PROVIDER_ORDER, Cloudflare first ...) make every image that is missing.
@@ -224,6 +225,22 @@ jobs:
           restore-keys: |
             flow-session-
 
+      # Browser history carried over between runs: only the small history files of the Chromium profile (no cookies, no passwords,
+      # no site storage, no caches). The login itself still comes from the saved session / FLOW_COOKIES_B64 above.
+      - name: Restore saved browser history
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            flow-batch/profile/Default/History
+            flow-batch/profile/Default/History-journal
+            flow-batch/profile/Default/Favicons
+            flow-batch/profile/Default/Top Sites
+            flow-batch/profile/Default/Shortcuts
+            flow-batch/profile/Default/Visited Links
+          key: flow-history-${{ github.run_id }}
+          restore-keys: |
+            flow-history-
+
       - name: Run Flow batch (the scenes, one session)
         continue-on-error: true
         timeout-minutes: 22
@@ -236,8 +253,9 @@ jobs:
           FLOW_COUNT: "1"
           FLOW_MODEL: ${{ vars.FLOW_MODEL || 'Nano Banana Lite' }}
         run: |
-          # The scenes wait is at most 10 minutes (hard cap in run_flow.js) and stops at once on Flow's "unusual activity" error,
-          # then the images are collected. The step cap is a little longer so collection and upload still finish.
+          # The scenes wait is at most 10 minutes (hard cap in run_flow.js) and stops at once on Flow's "unusual activity" error;
+          # run_flow.js then backs off and retries the missing scenes at most 2 times (time permitting), then the images are collected.
+          # The step cap is a little longer so collection and upload still finish.
           sed -i 's/"timeoutMinutes": *[0-9]*/"timeoutMinutes": 10/' config.json
           xvfb-run -a --server-args="-screen 0 1440x900x24" node run_flow.js
 
@@ -247,6 +265,20 @@ jobs:
         with:
           path: flow-batch/session
           key: flow-session-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Save browser history
+        if: always() && hashFiles('flow-batch/profile/Default/History') != ''
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            flow-batch/profile/Default/History
+            flow-batch/profile/Default/History-journal
+            flow-batch/profile/Default/Favicons
+            flow-batch/profile/Default/Top Sites
+            flow-batch/profile/Default/Shortcuts
+            flow-batch/profile/Default/Visited Links
+          key: flow-history-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Upload Flow images
         if: always()

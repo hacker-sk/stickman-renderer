@@ -157,6 +157,12 @@ const MODEL_CHECK = validateModel(WANT.model, cfg.allowedModels);
 if (!MODEL_CHECK.ok) throw new Error("Invalid model: " + MODEL_CHECK.reason);
 const RETRY_PASSES = cfg.retryFailedPasses === undefined ? 1 : cfg.retryFailedPasses;
 
+// Backoff + retry when Flow shows "We noticed some unusual activity": at most 2 retries (FLOW_BLOCK_RETRIES can lower it, never raise it; 0 = off).
+// The workflow step is capped at 22 minutes, so retries stop early when less than the time they need is left (STEP_LIMIT_MS).
+const BLOCK_RETRIES = (() => { const n = parseInt(process.env.FLOW_BLOCK_RETRIES || "2", 10); return Number.isNaN(n) ? 2 : Math.max(0, Math.min(n, 2)); })();
+const SCRIPT_START = Date.now();
+const STEP_LIMIT_MS = 20 * 60000;
+
 // Optional thumbnail pass, in the SAME browser session: it runs first with its own settings (portrait by default), the image is
 // copied to THUMB_OUT_DIR, then Flow is switched back to the scene settings (and verified) before the scenes are submitted.
 // Set THUMB_PROMPTS_FILE to switch it on; leave it empty for the old single-batch behaviour.
@@ -782,6 +788,59 @@ async function dumpUiText(ui, name) {
   // Let the last downloads land BEFORE deciding which scenes have no usable image.
   await flow.waitForTimeout(cfg.settleSeconds * 1000);
   let retried = false;
+
+  // Flow showed "We noticed some unusual activity": back off, reload the project in the SAME session (no new login) and re-submit
+  // only the scenes that still have no image. At most BLOCK_RETRIES (max 2) times; the second wait is longer than the first.
+  // Stops early when the step time budget is nearly used. The images already made are kept either way.
+  for (let n = 1; blocked && n <= BLOCK_RETRIES && parsedOk; n++) {
+    const waitMs = Math.round((n === 1 ? 90 + Math.random() * 60 : 240 + Math.random() * 120) * 1000);
+    if (Date.now() - SCRIPT_START + waitMs + 120000 > STEP_LIMIT_MS) {
+      console.log("::warning::Block retry " + n + " skipped: not enough step time left");
+      break;
+    }
+    console.log("::warning::Flow block retry " + n + " of " + BLOCK_RETRIES + ": waiting " + Math.round(waitMs / 1000) + "s, then reloading Flow");
+    mark('block_retry_' + n + '_wait');
+    await flow.waitForTimeout(waitMs);
+    try {
+      await flow.goto(FLOW_URL, { waitUntil: "domcontentloaded" });
+      await flow.waitForTimeout(12000);
+      const ftxt = await flow.locator("body").innerText().catch(() => "");
+      if (BLOCK_RE.test(ftxt)) {
+        console.log("Flow still shows the unusual-activity notice after the wait");
+        await flow.screenshot({ path: path.join(DEBUG_DIR, "blocked-retry" + n + ".png") }).catch(() => {});
+        continue;
+      }
+      blocked = false;
+      await applySceneSettings(true);
+      const cur = collectImages(orderScenesFromState(state, parsedOk));
+      const miss = new Set(cur.missingScenes);
+      const redo = state.map((s, i) => ({ s, i })).filter((x) => x.s.state !== "GENERATION_COMPLETED" || miss.has(x.i + 1));
+      if (!redo.length) { console.log("Block retry " + n + ": every scene already has an image"); break; }
+      console.log("Block retry " + n + " for prompts:", redo.map((x) => x.i + 1).join(","));
+      const redoPrompts = redo.map((x) => prompts[x.i]);
+      const before = await ui.locator(cfg.selectors.status).innerText().catch(() => "");
+      await submit(redoPrompts);
+      await ui.locator(cfg.selectors.startButton).click();
+      await flow.bringToFront();
+      await flow.waitForTimeout(8000);
+      retried = true;
+      mark('block_retry_' + n + '_started');
+      const left = STEP_LIMIT_MS - (Date.now() - SCRIPT_START);
+      setDeadline(Math.max(2, Math.min(6, Math.floor(left / 60000) - 1)));
+      done = await waitForCompletion(before, redoPrompts.length, redoPrompts);
+      const txt = await dumpUiText(ui, "05-blockretry" + n + "-ui-end-text.txt");
+      await ui.screenshot({ path: path.join(DEBUG_DIR, "05-blockretry" + n + "-ui-end.png") });
+      parseQueue(txt, redoPrompts).forEach((r, k) => {
+        const o = redo[k]; if (!o) return;
+        state[o.i].attempts += 1; state[o.i].state = r.state; state[o.i].ui_status = r.ui_status;
+      });
+      await flow.waitForTimeout(cfg.settleSeconds * 1000);
+    } catch (e) {
+      console.log("::warning::Block retry " + n + " failed to run:", String(e && e.message).slice(0, 160));
+      blocked = true; // the original cause was the block: keep the images so far and let the normal providers fill the rest
+      break;
+    }
+  }
 
   // Retry prompts the extension marked FAILED AND prompts marked done whose scene has no usable image
   // (only judged when the prompt->media mapping was captured), only when the queue was read cleanly.

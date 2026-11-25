@@ -584,6 +584,14 @@ async function dumpUiText(ui, name) {
   async function openUi() {
     if (ui) return ui;
     ui = await context.newPage();
+    // A real Chrome shows the extension as a narrow side panel (about 400 px wide). Playwright cannot open the side panel itself, so the
+    // same page runs in a tab; give that tab the side panel's width so the extension lays itself out as it does in the real panel.
+    // EXT_UI_WIDTH sets the width in pixels, 0 keeps the full-size tab.
+    const uiWidth = parseInt(process.env.EXT_UI_WIDTH || "400", 10);
+    if (uiWidth > 0) {
+      try { await ui.setViewportSize({ width: uiWidth, height: 900 }); console.log("Extension tab sized like the side panel:", uiWidth + "x900"); }
+      catch (e) { console.log("Extension tab size not set:", String(e && e.message).slice(0, 100)); }
+    }
     await ui.goto("chrome-extension://" + extId + "/" + cfg.extensionPage);
     await ui.waitForTimeout(4000);
     await ui.screenshot({ path: path.join(DEBUG_DIR, "02-ui.png") });

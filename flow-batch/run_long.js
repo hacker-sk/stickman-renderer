@@ -7,6 +7,9 @@
 //  - a failed or cancelled run leaves everything it made in the cache and the next run continues with the missing ones only.
 // run_flow.js caps its wait at 10 minutes, far too short for 200 images, so a patched COPY (run_flow_long.js) is used whose wait is
 // FLOW_MAX_WAIT_MIN = the time left in LONG_BUDGET_MIN. run_flow.js itself is not touched.
+// The same copy also gets a second patch: if the extension's prompt box / Start button is not usable for the real batch (this happened
+// after a blocked warm-up, the warm-up queue never finished and the extension page stayed busy), the extension page is closed and opened
+// fresh ONCE and the batch is submitted again, the same thing the block retries of run_flow.js already do.
 //
 // "Unusual activity" = Flow blocks the session. Retrying inside the SAME browser (wait, reload, submit again) kept ending with the same
 // block. What worked was the "Flow images, pass 2" workflow step: a brand-new `node run_long.js`, i.e. a new browser with a deleted
@@ -76,14 +79,19 @@ function finish(msg) {
 
 if (process.argv.includes("--check")) finish("check only");
 
-// patched copy of run_flow.js with a longer wait (the original caps it at 10 minutes)
+// patched copy of run_flow.js: (a) longer wait (the original caps it at 10 minutes), (b) one reopen of the extension page when the
+// real batch cannot be submitted (prompt box or Start button not usable)
 const FLOW_SCRIPT = "run_flow_long.js";
 {
   let src = fs.readFileSync(path.join(ROOT, "run_flow.js"), "utf8");
   const a = src.replace("Math.min(minutes, 10)", "Math.min(minutes, +(process.env.FLOW_MAX_WAIT_MIN || 10))");
   const b = a.replace("setDeadline(cfg.timeoutMinutes)", "setDeadline(+(process.env.FLOW_MAX_WAIT_MIN || cfg.timeoutMinutes))");
   if (a === src || b === a) console.log("::warning::run_flow.js wait cap not patched (text changed?), the wait stays at 10 minutes");
-  fs.writeFileSync(path.join(ROOT, FLOW_SCRIPT), b);
+  const oldSubmit = "    await submit(prompts);\n  } catch (e) {\n    await ui.screenshot({ path: path.join(DEBUG_DIR, \"03-disabled.png\") });";
+  const newSubmit = "    try { await submit(prompts); } catch (e0) { console.log(\"Real batch: the extension prompt box / Start button was not usable (\" + String(e0 && e0.message).slice(0, 100) + \") - reopening the extension page once\"); await resetUi(); await submit(prompts); }\n  } catch (e) {\n    await ui.screenshot({ path: path.join(DEBUG_DIR, \"03-disabled.png\") });";
+  const c = b.replace(oldSubmit, newSubmit);
+  if (c === b) console.log("::warning::run_flow.js submit retry not patched (text changed?), a blocked extension page is not reopened");
+  fs.writeFileSync(path.join(ROOT, FLOW_SCRIPT), c);
 }
 
 let blocked = false, fatal = false, outOfTime = false;

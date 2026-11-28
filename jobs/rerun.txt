@@ -2,4 +2,5 @@ Re-run trigger for the Long Landscape Video workflow
 Change this file and push to start a new run of jobs/long_package.json without editing the package.
 The package file stays identical, so the voice and image caches saved for it (named after its hash) are still used.
 
+
 last requested: 2026-11-28 20:06 IST, re-run of the previously failed long landscape video (Hindi, ancient India video), continuing from the saved images, with the early-block fix and project rotation now in place

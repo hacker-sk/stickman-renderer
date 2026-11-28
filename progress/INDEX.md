@@ -5,5 +5,6 @@ Newest first. Claude reads this file first on every package task.
 
 | Job folder | Format | Status | Last step done |
 |---|---|---|---|
+| 2026-11-28-sabka-sahara | shorts-hindi | in-progress | plan, script and 12 image prompts saved; package not yet pushed |
 | 2026-11-24-relationship-silence | shorts-hindi | done (run not verified) | package pushed to jobs/package.json (33a87fe) |
 | 2026-11-24-guru-nanak-jayanti | shorts-hindi | done (run not verified) | package pushed to jobs/package.json (a8f5425) |

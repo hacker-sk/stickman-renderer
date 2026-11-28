@@ -15,10 +15,12 @@ name: Hindi Shorts
 #            prompts as the "flow-prep" artifact.
 #   flow:    only the browser work, in ONE Flow session (one browser launch, one login). Downloads "flow-prep", then run_flow.js
 #            generates the scene images with Google Flow (ZAPI FLOW extension, same setup as flow-batch.yml, 10 minute wait cap; it also
-#            stops at once when Flow shows "We noticed some unusual activity" and then backs off and retries the missing scenes at most
-#            2 times in the same session), matches every image to its prompt through Flow's own
+#            stops at once when Flow shows "We noticed some unusual activity" and then backs off and retries the missing scenes up to
+#            5 times in the same session, waiting longer before each retry; the retries share the step time budget FLOW_STEP_LIMIT_MIN),
+#            matches every image to its prompt through Flow's own
 #            media ids, saves it as scene_NN.<ext>, retries scenes that have no usable image, and uploads the images + a manifest as
 #            the "flow-images" artifact. The browser's small history files are cached between runs (flow-history-* cache).
+#            The ZAPI extension page opens in its own full-size tab (EXT_UI_WIDTH, default 0 = full size).
 #   make:    always runs afterwards (also when prepare or flow failed). Reuses the prepared voice and word timing only when the
 #            narration hash matches (otherwise it makes its own voice and runs its own Whisper), gives each scene its scene_NN image,
 #            and the normal providers (IMAGE_PROVIDER_ORDER, Cloudflare first ...) make every image that is missing.
@@ -184,7 +186,8 @@ jobs:
     needs: prepare
     if: needs.prepare.outputs.flow == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    # Up to 10 min of waiting for the images + 5 block retries (waits of about 2, 6, 9, 12 and 15 min plus the time each retry needs).
+    timeout-minutes: 125
     steps:
       - uses: actions/checkout@v4
 
@@ -243,7 +246,7 @@ jobs:
 
       - name: Run Flow batch (the scenes, one session)
         continue-on-error: true
-        timeout-minutes: 22
+        timeout-minutes: 105
         working-directory: flow-batch
         env:
           FLOW_COOKIES_B64: ${{ secrets.FLOW_COOKIES_B64 }}
@@ -252,9 +255,13 @@ jobs:
           FLOW_ASPECT: ${{ vars.FLOW_ASPECT || '3:4' }}
           FLOW_COUNT: "1"
           FLOW_MODEL: ${{ vars.FLOW_MODEL || 'Nano Banana 2.1' }}
+          # Time budget of the whole script for the 5 block retries (run_flow.js skips a retry that would not fit). Kept 10 minutes
+          # below the step cap so collection, the cooldown pass and the uploads still finish.
+          FLOW_STEP_LIMIT_MIN: "95"
+          EXT_UI_WIDTH: "0"
         run: |
           # The scenes wait is at most 10 minutes (hard cap in run_flow.js) and stops at once on Flow's "unusual activity" error;
-          # run_flow.js then backs off and retries the missing scenes at most 2 times (time permitting), then the images are collected.
+          # run_flow.js then backs off and retries the missing scenes up to 5 times (time permitting), then the images are collected.
           # The step cap is a little longer so collection and upload still finish.
           sed -i 's/"timeoutMinutes": *[0-9]*/"timeoutMinutes": 10/' config.json
           xvfb-run -a --server-args="-screen 0 1440x900x24" node run_flow.js

@@ -1,5 +1,6 @@
 // Logs in to Google with credentials from repo secrets and saves fresh Flow session cookies
 // to session/cookies.json (same format run_flow.js reads). Never logs or uploads cookie values.
+// Supports the "tap Yes on your phone" prompt: it waits for you to approve it on your phone.
 const { chromium } = require("playwright");
 const fs = require("fs");
 const path = require("path");
@@ -9,6 +10,7 @@ const EMAIL = (process.env.FLOW_GOOGLE_EMAIL || "").trim();
 const PASSWORD = process.env.FLOW_GOOGLE_PASSWORD || "";
 const TOTP_SECRET = (process.env.FLOW_GOOGLE_TOTP_SECRET || "").replace(/\s+/g, "");
 const FLOW_URL = (process.env.FLOW_URL || "").trim() || "https://labs.google/fx/tools/flow";
+const WAIT_SEC = Number(process.env.LOGIN_WAIT_SEC) || 270;
 const SESS_DIR = path.resolve(__dirname, "session");
 const SESS_FILE = path.join(SESS_DIR, "cookies.json");
 const DEBUG_DIR = path.resolve(__dirname, "debug-login");
@@ -76,13 +78,14 @@ const log = (m) => console.log(new Date().toISOString().slice(11, 19) + " " + m)
     await page.keyboard.press("Enter");
     log("Email submitted");
 
-    let pwDone = false, totpTries = 0, lastTotpAt = 0, altTried = 0;
-    const deadline = Date.now() + 150000;
+    let pwDone = false, totpTries = 0, lastTotpAt = 0, altTried = 0, phoneNoted = false;
+    const deadline = Date.now() + WAIT_SEC * 1000;
     while (Date.now() < deadline) {
       await page.waitForTimeout(1500);
       const url = page.url();
       if (!/accounts\.google\.com/.test(url)) break;
-      const body = (await page.locator("body").innerText().catch(() => "")).toLowerCase();
+      const rawBody = await page.locator("body").innerText().catch(() => "");
+      const body = rawBody.toLowerCase();
 
       if (/wrong password|couldn.t find your google account|couldn.t sign you in|this browser or app may not be secure/.test(body)) {
         throw new Error("Google refused the sign-in (wrong credentials, or the automated browser was blocked)");
@@ -124,6 +127,18 @@ const log = (m) => console.log(new Date().toISOString().slice(11, 19) + " " + m)
         continue;
       }
 
+      // "Tap Yes on your phone" prompt: just wait for the approval (no secret needed).
+      if (pwDone && /check your phone|tap yes|sent a notification|sent you a notification|tap the number|device you use to sign in|google sent a notification/.test(body)) {
+        if (!phoneNoted) {
+          phoneNoted = true;
+          log("Waiting for you to APPROVE the sign-in on your phone (up to " + WAIT_SEC + " seconds from start)");
+          const nums = rawBody.split("\n").map((s) => s.trim()).filter((s) => /^\d{1,3}$/.test(s));
+          if (nums.length) log("Number shown on screen: " + nums.join(", ") + " (tap this number on your phone if it asks)");
+          await shot("phone-prompt");
+        }
+        continue;
+      }
+
       if (/passkeyenrollment|speedbump|signin\/v2\/(challenge\/)?(recovery|selection)?/.test(url) || /not now|skip|no thanks|i understand/.test(body)) {
         const btn = page.getByRole("button", { name: /not now|skip|no thanks|i understand|confirm|continue/i }).first();
         if (await btn.isVisible().catch(() => false)) {
@@ -132,12 +147,12 @@ const log = (m) => console.log(new Date().toISOString().slice(11, 19) + " " + m)
         }
       }
 
-      if (pwDone && /verify it.s you|confirm your recovery|check your phone|get a verification code/.test(body) && !TOTP_SECRET) {
-        throw new Error("Google wants extra verification (phone/recovery) that this job cannot complete");
+      if (pwDone && /confirm your recovery|enter a phone number|verify your recovery/.test(body) && !TOTP_SECRET) {
+        throw new Error("Google wants a recovery email/phone check that this job cannot complete");
       }
     }
     if (/accounts\.google\.com/.test(page.url())) {
-      throw new Error("Still on Google sign-in after timeout (path: " + new URL(page.url()).pathname + ")");
+      throw new Error("Still on Google sign-in after timeout - phone not approved in time? (path: " + new URL(page.url()).pathname + ")");
     }
 
     log("Signed in, opening Flow");

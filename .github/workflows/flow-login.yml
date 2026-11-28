@@ -20,18 +20,26 @@ jobs:
           [ -z "$EMAIL" ] && miss="$miss FLOW_GOOGLE_EMAIL"
           [ -z "$PASSWORD" ] && miss="$miss FLOW_GOOGLE_PASSWORD"
           if [ -n "$miss" ]; then echo "::error::Missing repository secrets:$miss"; exit 1; fi
-          [ -z "$TOTP" ] && echo "::notice::FLOW_GOOGLE_TOTP_SECRET not set - fine only if the account has no 2-step verification"
+          [ -z "$TOTP" ] && echo "::notice::No TOTP secret - if Google sends a phone prompt, keep your phone ready and tap Yes when this job runs"
           echo "Configuration present"
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+      - name: Cache npm packages and browser
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.npm
+            ~/.cache/ms-playwright
+            flow-batch/node_modules
+          key: flow-login-deps-${{ runner.os }}-${{ hashFiles('flow-batch/package.json') }}
       - name: Install dependencies
         working-directory: flow-batch
         run: |
-          npm install
-          npx playwright install --with-deps chromium
-          sudo apt-get install -y xvfb
+          npm install --no-audit --no-fund
+          npx playwright install chromium
+          command -v xvfb-run >/dev/null || sudo apt-get install -y xvfb
       - name: Log in and save session
         working-directory: flow-batch
         env:
@@ -39,6 +47,7 @@ jobs:
           FLOW_GOOGLE_PASSWORD: ${{ secrets.FLOW_GOOGLE_PASSWORD }}
           FLOW_GOOGLE_TOTP_SECRET: ${{ secrets.FLOW_GOOGLE_TOTP_SECRET }}
           FLOW_URL: ${{ vars.FLOW_PROJECT_URL }}
+          LOGIN_WAIT_SEC: "270"
         run: xvfb-run -a --server-args="-screen 0 1440x900x24" node login_flow.js
       - name: Save new Flow session
         if: success() && hashFiles('flow-batch/session/cookies.json') != ''

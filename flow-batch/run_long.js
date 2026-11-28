@@ -183,4 +183,4 @@ while (!fatal && !outOfTime) {
   // A blocked session that made no image is handled by the fresh-session retries above; only a normal round without progress stops here.
   if (!blocked && !fatal && !outOfTime && N - missing().length === before) { console.log("no progress in round " + passNo + ", stopping"); break; }
 }
-finish(blocked ? "Flow blocked (unusual activity), still blocked after " + freshRuns + " fresh session(s)" : fatal ? "Flow segment problem" : outOfTime ? "time budget used up" : "");
+finish(blocked ? "Flow blocked (unusual activity), still blocked after " + freshRuns + " fresh session(s)" : fatal ? "Flow setup problem" : outOfTime ? "time budget used up" : "");

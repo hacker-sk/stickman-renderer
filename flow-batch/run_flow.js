@@ -159,11 +159,18 @@ const MODEL_CHECK = validateModel(WANT.model, cfg.allowedModels);
 if (!MODEL_CHECK.ok) throw new Error("Invalid model: " + MODEL_CHECK.reason);
 const RETRY_PASSES = cfg.retryFailedPasses === undefined ? 1 : cfg.retryFailedPasses;
 
-// Backoff + retry when Flow shows "We noticed some unusual activity": at most 2 retries (FLOW_BLOCK_RETRIES can lower it, never raise it; 0 = off).
-// The workflow step is capped at 22 minutes, so retries stop early when less than the time they need is left (STEP_LIMIT_MS).
-const BLOCK_RETRIES = (() => { const n = parseInt(process.env.FLOW_BLOCK_RETRIES || "2", 10); return Number.isNaN(n) ? 2 : Math.max(0, Math.min(n, 2)); })();
+// Backoff + retry when Flow shows "We noticed some unusual activity": up to 5 retries (FLOW_BLOCK_RETRIES can lower it, never raise it; 0 = off).
+// Every retry waits first (BLOCK_WAITS_S, longer each time), reloads the Flow project in the SAME session (no new login), and re-submits only
+// the scenes that still have no image. A retry that fails to run (page error, prompt box not ready) no longer ends the loop: the next retry
+// still happens. The retries must fit into the step time budget STEP_LIMIT_MS = FLOW_STEP_LIMIT_MIN minutes (set by the workflow or by
+// run_long.js; default 20), counted from the start of this script. A retry that would not fit is skipped and so are all later ones.
+const BLOCK_RETRY_MAX = 5;
+const BLOCK_RETRIES = (() => { const n = parseInt(process.env.FLOW_BLOCK_RETRIES || String(BLOCK_RETRY_MAX), 10); return Number.isNaN(n) ? BLOCK_RETRY_MAX : Math.max(0, Math.min(n, BLOCK_RETRY_MAX)); })();
+const BLOCK_WAITS_S = [[90, 150], [240, 360], [360, 540], [480, 720], [600, 900]]; // seconds to wait before retry 1..5
 const SCRIPT_START = Date.now();
-const STEP_LIMIT_MS = 20 * 60000;
+const STEP_LIMIT_MS = (() => { const m = parseFloat(process.env.FLOW_STEP_LIMIT_MIN || ""); return (m > 0 ? m : 20) * 60000; })();
+// Longest wait for the images of ONE block retry: a long video (FLOW_MAX_WAIT_MIN set by run_long.js) may need hours, a Shorts batch minutes.
+const BLOCK_GEN_CAP_MIN = parseFloat(process.env.FLOW_MAX_WAIT_MIN || "") > 0 ? 600 : 8;
 
 // Cooldown pass (last step, after every real image is safe): Flow is switched to a RANDOM ratio and model and 1..COOL_MAX throwaway images
 // are made. They are never kept. COOL_MAX comes from config.json cooldown.images (default 2, max 2, 0 = off); env FLOW_COOLDOWN_IMAGES overrides it.
@@ -496,6 +503,7 @@ async function dumpUiText(ui, name) {
   if (!prompts.length) throw new Error("No prompts found in " + PROMPTS_FILE);
   console.log("Prompts loaded:", prompts.length);
   console.log("Wanted Flow settings:", JSON.stringify(WANT), "-> ratio", ASP.label, "| model check:", JSON.stringify(MODEL_CHECK));
+  console.log("Block retries: up to " + BLOCK_RETRIES + " | step time budget: " + Math.round(STEP_LIMIT_MS / 60000) + " min");
   if (THUMB_FILE) console.log("Thumbnail pass on (same session):", THUMB_FILE, "->", THUMB_ASP.label, "then back to", ASP.label);
   TRACKER = createMediaTracker(prompts, DEBUG_DIR);
 
@@ -604,9 +612,9 @@ async function dumpUiText(ui, name) {
     if (ui) return ui;
     ui = await context.newPage();
     // A real Chrome shows the extension as a narrow side panel (about 400 px wide). Playwright cannot open the side panel itself, so the
-    // same page runs in a tab; give that tab the side panel's width so the extension lays itself out as it does in the real panel.
-    // EXT_UI_WIDTH sets the width in pixels, 0 keeps the full-size tab.
-    const uiWidth = parseInt(process.env.EXT_UI_WIDTH || "400", 10);
+    // extension runs in its own tab. By default (EXT_UI_WIDTH unset or 0) that tab keeps the full browser window size, which is the layout
+    // that worked best. EXT_UI_WIDTH=400 (any width in pixels) gives the tab the narrow side-panel width instead.
+    const uiWidth = parseInt(process.env.EXT_UI_WIDTH || "0", 10);
     if (uiWidth > 0) {
       try { await ui.setViewportSize({ width: uiWidth, height: 900 }); console.log("Extension tab sized like the side panel:", uiWidth + "x900"); }
       catch (e) { console.log("Extension tab size not set:", String(e && e.message).slice(0, 100)); }
@@ -633,13 +641,21 @@ async function dumpUiText(ui, name) {
     return ui;
   }
 
+  // Closes the extension tab and opens a fresh one (new queue state). Used by a block retry when the prompt box is not ready.
+  async function resetUi() {
+    try { if (ui) await ui.close(); } catch (e) {}
+    ui = null;
+    return openUi();
+  }
+
   // The wait for each pass has its own cap (thumbnail: THUMB_MINUTES, scenes: config timeoutMinutes, never more than 10).
   let deadline = Date.now();
   function setDeadline(minutes) { deadline = Date.now() + Math.min(minutes, 10) * 60000; }
   // Only account/quota problems end the wait early. A single failed prompt never does.
   const fatalRe = /sign in|not logged|quota|limit/i;
   let completionVia = "";
-  // Flow's "We noticed some unusual activity" failure card: Google is blocking this session, retrying or waiting is pointless.
+  // Flow's "We noticed some unusual activity" failure card: Google is blocking this session. The wait stops at once; the block retries
+  // further down wait, reload Flow and try again.
   let blocked = false;
   const BLOCK_RE = /noticed some unusual activity/i;
 
@@ -793,7 +809,7 @@ async function dumpUiText(ui, name) {
     if (!COOL_MAX) { out.skipped = "off"; return out; }
     if (blocked) { out.skipped = "Flow blocked"; return out; }
     if (!done) { out.skipped = "queue not finished"; return out; }
-    if (!(process.env.FLOW_MAX_WAIT_MIN || "").trim() && Date.now() - SCRIPT_START + 8 * 60000 > STEP_LIMIT_MS) { out.skipped = "not enough step time left"; return out; }
+    if (Date.now() - SCRIPT_START + 8 * 60000 > STEP_LIMIT_MS) { out.skipped = "not enough step time left"; return out; }
     const cdir = path.join(DEBUG_DIR, "cooldown");
     try {
       fs.mkdirSync(cdir, { recursive: true });
@@ -904,15 +920,19 @@ async function dumpUiText(ui, name) {
   let retried = false;
 
   // Flow showed "We noticed some unusual activity": back off, reload the project in the SAME session (no new login) and re-submit
-  // only the scenes that still have no image. At most BLOCK_RETRIES (max 2) times; the second wait is longer than the first.
-  // Stops early when the step time budget is nearly used. The images already made are kept either way.
-  for (let n = 1; blocked && n <= BLOCK_RETRIES && parsedOk; n++) {
-    const waitMs = Math.round((n === 1 ? 90 + Math.random() * 60 : 240 + Math.random() * 120) * 1000);
-    if (Date.now() - SCRIPT_START + waitMs + 120000 > STEP_LIMIT_MS) {
-      console.log("::warning::Block retry " + n + " skipped: not enough step time left");
+  // only the scenes that still have no image. Up to BLOCK_RETRIES (max 5) times; every wait is longer than the one before (BLOCK_WAITS_S).
+  // When the queue text could not be read (parsedOk false) the scenes without an image are taken from the media mapping instead.
+  // Stops early when the step time budget (STEP_LIMIT_MS) is nearly used. The images already made are kept either way.
+  const canJudge = parsedOk || TRACKER.hasMapping();
+  for (let n = 1; blocked && n <= BLOCK_RETRIES && canJudge; n++) {
+    const w = BLOCK_WAITS_S[n - 1];
+    const waitMs = Math.round((w[0] + Math.random() * (w[1] - w[0])) * 1000);
+    const leftNow = STEP_LIMIT_MS - (Date.now() - SCRIPT_START);
+    if (waitMs + 120000 > leftNow) {
+      console.log("::warning::Block retry " + n + " skipped: not enough step time left (" + Math.max(0, Math.round(leftNow / 60000)) + " min left, it needs " + Math.round((waitMs + 120000) / 60000) + ")");
       break;
     }
-    console.log("::warning::Flow block retry " + n + " of " + BLOCK_RETRIES + ": waiting " + Math.round(waitMs / 1000) + "s, then reloading Flow");
+    console.log("::warning::Flow block retry " + n + " of " + BLOCK_RETRIES + ": waiting " + Math.round(waitMs / 1000) + "s, then reloading Flow (" + Math.round(leftNow / 60000) + " min of step time left)");
     mark('block_retry_' + n + '_wait');
     await flow.waitForTimeout(waitMs);
     try {
@@ -928,19 +948,26 @@ async function dumpUiText(ui, name) {
       await applySceneSettings(true);
       const cur = collectImages(orderScenesFromState(state, parsedOk));
       const miss = new Set(cur.missingScenes);
-      const redo = state.map((s, i) => ({ s, i })).filter((x) => x.s.state !== "GENERATION_COMPLETED" || miss.has(x.i + 1));
+      const redo = state.map((s, i) => ({ s, i })).filter((x) => (parsedOk ? (x.s.state !== "GENERATION_COMPLETED" || miss.has(x.i + 1)) : miss.has(x.i + 1)));
       if (!redo.length) { console.log("Block retry " + n + ": every scene already has an image"); break; }
       console.log("Block retry " + n + " for prompts:", redo.map((x) => x.i + 1).join(","));
       const redoPrompts = redo.map((x) => prompts[x.i]);
+      await openUi();
+      try {
+        await submit(redoPrompts);
+      } catch (e) {
+        console.log("Block retry " + n + ": the extension prompt box was not ready (" + String(e && e.message).slice(0, 100) + ") - reopening the extension page once");
+        await resetUi();
+        await submit(redoPrompts);
+      }
       const before = await ui.locator(cfg.selectors.status).innerText().catch(() => "");
-      await submit(redoPrompts);
       await ui.locator(cfg.selectors.startButton).click();
       await flow.bringToFront();
       await flow.waitForTimeout(8000);
       retried = true;
       mark('block_retry_' + n + '_started');
       const left = STEP_LIMIT_MS - (Date.now() - SCRIPT_START);
-      setDeadline(Math.max(2, Math.min(6, Math.floor(left / 60000) - 1)));
+      setDeadline(Math.max(2, Math.min(BLOCK_GEN_CAP_MIN, Math.floor(left / 60000) - 2)));
       done = await waitForCompletion(before, redoPrompts.length, redoPrompts);
       const txt = await dumpUiText(ui, "05-blockretry" + n + "-ui-end-text.txt");
       await ui.screenshot({ path: path.join(DEBUG_DIR, "05-blockretry" + n + "-ui-end.png") });
@@ -951,8 +978,8 @@ async function dumpUiText(ui, name) {
       await flow.waitForTimeout(cfg.settleSeconds * 1000);
     } catch (e) {
       console.log("::warning::Block retry " + n + " failed to run:", String(e && e.message).slice(0, 160));
-      blocked = true; // the original cause was the block: keep the images so far and let the normal providers fill the rest
-      break;
+      blocked = true; // the original cause was the block: keep the images so far; the next retry (if any) still gets its turn
+      continue;
     }
   }
 
@@ -985,7 +1012,12 @@ async function dumpUiText(ui, name) {
     }
   }
 
-  if (blocked) mark('blocked_unusual_activity');
+  if (blocked) {
+    mark('blocked_unusual_activity');
+    // run_long.js reads this file: Flow is STILL blocked after every retry. (debug/blocked.png alone is not enough, it is also written
+    // when a block was seen and a later retry got past it.)
+    try { fs.writeFileSync(path.join(DEBUG_DIR, "blocked-final.flag"), "Flow still blocked after the retries (" + new Date().toISOString() + ")" + NL); } catch (e) {}
+  }
   if (retried) await flow.waitForTimeout(cfg.settleSeconds * 1000);
 
   // ---- Cooldown: random settings + 1-2 throwaway images, nothing kept (runs only when the whole batch finished and Flow is not blocking) ----

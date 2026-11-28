@@ -67,15 +67,29 @@ const log = (m) => console.log(new Date().toISOString().slice(11, 19) + " " + m)
     }
     return false;
   };
+  // Presses the blue "Next" button if it is there, otherwise Enter.
+  const pressNext = async () => {
+    const btn = page.getByRole("button", { name: /^next$/i }).first();
+    if (await btn.isVisible().catch(() => false)) {
+      await btn.click({ timeout: 5000 }).catch(() => page.keyboard.press("Enter"));
+    } else {
+      await page.keyboard.press("Enter");
+    }
+  };
 
   let exitCode = 0;
   try {
     log("Opening Google sign-in");
     await page.goto("https://accounts.google.com/ServiceLogin?hl=en&continue=" + encodeURIComponent(FLOW_URL), { waitUntil: "domcontentloaded" });
-    const emailBox = page.locator('input[type="email"]').first();
-    await emailBox.waitFor({ timeout: 30000 });
+    // Google's email box is not always type="email" (the new sign-in page uses a plain text box), so match it several ways.
+    const emailBox = page
+      .locator('input#identifierId, input[name="identifier"], input[type="email"], input[autocomplete="username"]')
+      .or(page.getByRole("textbox", { name: /email or phone/i }))
+      .first();
+    await emailBox.waitFor({ state: "visible", timeout: 45000 });
+    await emailBox.click().catch(() => {});
     await emailBox.fill(EMAIL);
-    await page.keyboard.press("Enter");
+    await pressNext();
     log("Email submitted");
 
     let pwDone = false, totpTries = 0, lastTotpAt = 0, altTried = 0, phoneNoted = false;
@@ -94,12 +108,12 @@ const log = (m) => console.log(new Date().toISOString().slice(11, 19) + " " + m)
         throw new Error("Google showed a captcha - cannot continue automatically");
       }
 
-      const totpBox = page.locator('input[name="totpPin"], input#totpPin').first();
+      const totpBox = page.locator('input[name="totpPin"], input#totpPin, input[autocomplete="one-time-code"]').first();
       if (await totpBox.isVisible().catch(() => false)) {
         if (!TOTP_SECRET) throw new Error("Google asks for a 2-step code but FLOW_GOOGLE_TOTP_SECRET is not set");
         if (totpTries === 0 || (Date.now() - lastTotpAt > 35000 && totpTries < 2)) {
           await totpBox.fill(totp(TOTP_SECRET));
-          await page.keyboard.press("Enter");
+          await pressNext();
           totpTries++;
           lastTotpAt = Date.now();
           log("2-step code submitted (try " + totpTries + ")");
@@ -112,7 +126,7 @@ const log = (m) => console.log(new Date().toISOString().slice(11, 19) + " " + m)
       const pw = page.locator('input[type="password"]:visible, input[name="Passwd"]:visible').first();
       if (!pwDone && (await pw.isVisible().catch(() => false))) {
         await pw.fill(PASSWORD);
-        await page.keyboard.press("Enter");
+        await pressNext();
         pwDone = true;
         log("Password submitted");
         continue;
@@ -169,6 +183,7 @@ const log = (m) => console.log(new Date().toISOString().slice(11, 19) + " " + m)
     log("Saved " + google.length + " Google cookies to session/cookies.json");
   } catch (e) {
     console.error("LOGIN FAILED: " + e.message);
+    try { console.error("Page at failure: " + new URL(page.url()).pathname); } catch (_) {}
     await shot("failure");
     exitCode = 1;
   }

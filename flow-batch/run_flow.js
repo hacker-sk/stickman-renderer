@@ -843,7 +843,9 @@ async function dumpUiText(ui, name) {
       console.log("::warning::Cooldown pass failed (the batch result is not affected): " + out.error);
       mark('cooldown_error');
     } finally {
-      COOLING = false;
+      // Once the throwaway images were started COOLING stays ON until the browser closes: nothing else is generated after this step,
+      // so a late auto-download is still deleted and can never be saved as a "wrong ratio" image of the real batch.
+      if (!out.ran) COOLING = false;
       try { fs.writeFileSync(path.join(cdir, "cooldown.json"), JSON.stringify(out, null, 2)); } catch (e) {}
     }
     return out;

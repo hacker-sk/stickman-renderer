@@ -7,7 +7,7 @@
   "abortOnSettingsMismatch": true,
   "abortOnUnverifiedSettings": false,
   "failOnPartial": false,
-  "allowedModels": ["Nano Banana 2 Lite", "Nano Banana 2", "Nano Banana Pro", "Nano Banana", "Imagen 4"],
+  "allowedModels": ["Nano Banana 2.1", "Nano Banana 2 Lite", "Nano Banana 2", "Nano Banana Pro", "Nano Banana", "Imagen 4"],
   "flowSettings": {
     "agent": "off",
     "model": "Nano Banana Lite",

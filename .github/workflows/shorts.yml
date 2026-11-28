@@ -3,10 +3,9 @@ name: Hindi Shorts
 # Hindi portrait Shorts, fully on GitHub Actions: topic -> script -> image prompts -> render -> Buffer.
 # Manual run (GitHub Mobile): Actions > Hindi Shorts > Run workflow, then fill in an idea OR a finished script (or leave both empty).
 # Package from Claude chat: pushing jobs/package.json starts a run that uses it as the package input (renders and posts to Buffer).
-# Scheduled run: every 3.5 hours between 10:00 and 22:00 IST. The schedule is ALWAYS ON (it no longer depends on the
-# SHORTS_SCHEDULE_ENABLED variable). To stop it, disable the workflow in the Actions tab or remove the schedule block below.
+# There is NO scheduled run any more (the daily schedule was removed). Runs start only from a package push or a manual run.
 # Art style: pick one of the six prebuilt styles, or leave "random" (the default). A chat package can also carry its own
-# "art_style"; when neither a package style nor a chosen style exists (scheduled runs too), one style is picked at random.
+# "art_style"; when neither a package style nor a chosen style exists, one style is picked at random.
 #
 # Google Flow images (package runs only) use three jobs: prepare -> flow -> make.
 #   prepare: makes the voiceover, works out the word timing of that voice by FORCED ALIGNMENT of the known script (falls back to the
@@ -17,8 +16,9 @@ name: Hindi Shorts
 #            with Google Flow (ZAPI FLOW extension, same setup as flow-batch.yml, 10 minute wait cap; it stops at once when Flow shows
 #            "We noticed some unusual activity"). Every block retry is then a FRESH session, like the "pass 2" of the long video
 #            workflow: wait (about 1, 3, 5, 8 and 10 minutes), new browser, deleted profile, cookies loaded again, only the scenes
-#            that still have no image, up to 5 times within the step time budget FLOW_STEP_LIMIT_MIN. The images of all sessions are
-#            merged. run_flow.js matches every image to its prompt through Flow's own media ids, saves it as scene_NN.<ext>, retries
+#            that still have no image, up to 5 times within the step time budget FLOW_STEP_LIMIT_MIN. An early block (the warm-up image
+#            hit the notice, or the Start button never enabled, and no image was made) counts as a block too, like in run_long.js.
+#            The images of all sessions are merged. run_flow.js matches every image to its prompt through Flow's own media ids, saves it as scene_NN.<ext>, retries
 #            scenes that have no usable image, and the images + a manifest are uploaded as the "flow-images" artifact.
 #            The browser's small history files are cached between runs (flow-history-* cache).
 #            The ZAPI extension page opens in its own tab sized like the side panel (400 px; human.js turns EXT_UI_WIDTH 0 into 400,
@@ -35,11 +35,6 @@ name: Hindi Shorts
 # Python packages: prepare and make install the SAME pinned versions (constraints.txt, CPU torch 2.8.0) on Ubuntu 24.04.
 
 on:
-  schedule:
-    - cron: "30 4 * * *"    # 10:00 IST
-    - cron: "0 8 * * *"     # 13:30 IST
-    - cron: "30 11 * * *"   # 17:00 IST
-    - cron: "0 15 * * *"    # 20:30 IST
   push:
     paths:
       - "jobs/package.json"
@@ -89,7 +84,7 @@ concurrency:
 
 jobs:
   prepare:
-    if: github.event_name != 'schedule' && vars.FLOW_ENABLED != 'false'
+    if: vars.FLOW_ENABLED != 'false'
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     outputs:

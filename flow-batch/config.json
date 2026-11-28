@@ -14,6 +14,12 @@
     "aspect": "portrait",
     "count": 1
   },
+  "cooldown": {
+    "images": 2,
+    "models": ["Nano Banana 2.1", "Nano Banana 2 Lite", "Nano Banana 2", "Nano Banana Pro", "Nano Banana", "Imagen 4"],
+    "aspects": ["9:16", "16:9", "1:1", "3:4", "4:3"]
+  },
+  "_cooldown_note": "After the batch, Flow is switched to a random ratio and model and 1..images throwaway images are made (never kept, screenshots in debug/cooldown). images 0 = off. Env FLOW_COOLDOWN_IMAGES overrides it.",
   "_aspect_options": "portrait (9:16) | landscape (16:9) | square (1:1) | 3:4 | 4:3. Overridable per run from the workflow inputs.",
   "_allowedModels_note": "Model names are checked loosely against this list before Chrome starts. Add new Flow model names here.",
   "_status_note": "PARTIAL_SUCCESS exits 0 with a warning. Set failOnPartial to true to make it fail the job. FAILED (no usable images) always fails.",

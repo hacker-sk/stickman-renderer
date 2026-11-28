@@ -8,6 +8,7 @@ const { applyFlowSettings, resolveAspect, matchesAspect } = require("./flow_help
 const { parseDoneMessage, isQueueComplete, detectOverGeneration, computeBatchStatus, validateModel, uniqueName } = require("./flow_utils");
 const { turnOffSerial } = require("./ext_settings");
 const { createMediaTracker } = require("./flow_match");
+const { chooseCooldown, pickCooldownPrompts, looseModelRe } = require("./cooldown");
 
 const cfg = JSON.parse(fs.readFileSync(path.join(__dirname, "config.json"), "utf8"));
 const FLOW_URL = process.env.FLOW_URL || cfg.flowUrl;
@@ -27,6 +28,7 @@ fs.mkdirSync(DEBUG_DIR, { recursive: true });
 const NL = String.fromCharCode(10);
 let TRACKER = null; // prompt -> Flow media UUID tracker (set once the prompts are loaded)
 let CONTEXT = null; // the browser context (set once it is launched)
+let COOLING = false; // true only during the cooldown pass: every download is deleted, nothing is kept
 const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
 
 // ---------------------------------------------------------------------------------------------------------------------------------
@@ -162,6 +164,17 @@ const RETRY_PASSES = cfg.retryFailedPasses === undefined ? 1 : cfg.retryFailedPa
 const BLOCK_RETRIES = (() => { const n = parseInt(process.env.FLOW_BLOCK_RETRIES || "2", 10); return Number.isNaN(n) ? 2 : Math.max(0, Math.min(n, 2)); })();
 const SCRIPT_START = Date.now();
 const STEP_LIMIT_MS = 20 * 60000;
+
+// Cooldown pass (last step, after every real image is safe): Flow is switched to a RANDOM ratio and model and 1..COOL_MAX throwaway images
+// are made. They are never kept. COOL_MAX comes from config.json cooldown.images (default 2, max 2, 0 = off); env FLOW_COOLDOWN_IMAGES overrides it.
+const COOL_MAX = (() => {
+  const e = (process.env.FLOW_COOLDOWN_IMAGES || "").trim();
+  const v = e !== "" ? parseInt(e, 10) : (cfg.cooldown && cfg.cooldown.images !== undefined ? cfg.cooldown.images : 2);
+  return Number.isNaN(v) ? 0 : Math.max(0, Math.min(v, 2));
+})();
+const COOL_MODELS = (cfg.cooldown && Array.isArray(cfg.cooldown.models) && cfg.cooldown.models.length) ? cfg.cooldown.models : (cfg.allowedModels || []);
+const COOL_ASPECTS = (cfg.cooldown && Array.isArray(cfg.cooldown.aspects) && cfg.cooldown.aspects.length) ? cfg.cooldown.aspects : ["9:16", "16:9", "1:1", "3:4", "4:3"];
+const COOL_WAIT_MS = 4 * 60000;
 
 // Optional thumbnail pass, in the SAME browser session: it runs first with its own settings (portrait by default), the image is
 // copied to THUMB_OUT_DIR, then Flow is switched back to the scene settings (and verified) before the scenes are submitted.
@@ -505,6 +518,12 @@ async function dumpUiText(ui, name) {
   catch (e) { console.log("Download-name capture: page script not installed:", String(e && e.message).slice(0, 100)); }
 
   const hook = (pg) => pg.on("download", async (d) => {
+    if (COOLING) {
+      // Cooldown images are never kept: the download is deleted at once and only a note goes to debug/download-names.json.
+      try { DL_NAMES.push({ t: new Date().toISOString(), cooldown: true, url: safeUrl(d.url()), suggested: d.suggestedFilename(), saved_as: null }); } catch (e) {}
+      await d.delete().catch(() => {});
+      return;
+    }
     let rec = null;
     try { rec = await recoverName(d.url()); } catch (e) {}
     const sugg = d.suggestedFilename();
@@ -625,7 +644,7 @@ async function dumpUiText(ui, name) {
   const BLOCK_RE = /noticed some unusual activity/i;
 
   // Wait until the WHOLE queue is accounted for (all `expected` prompts finished or failed), a fatal problem appears,
-  // or the overall deadline passes. Signals: the extension's "Done — N succeeded, M failed" message when N+M equals the
+  // or the overall deadline passes. Signals: the extension's "Done - N succeeded, M failed" message when N+M equals the
   // number of prompts submitted, or every queue row being DONE/FAILED.
   async function waitForCompletion(ignoreText, expected, list) {
     const began = Date.now();
@@ -743,6 +762,91 @@ async function dumpUiText(ui, name) {
         throw new Error("SETTINGS UNVERIFIED: could not read the Flow settings chip and abortOnUnverifiedSettings is true. Nothing was submitted. See debug/02b-settings-*.png");
       }
     }
+  }
+
+  // Waits for the cooldown queue. Own small loop on purpose: it never touches `blocked`, `completionVia` or debug/blocked.png,
+  // so a block seen here can never be mistaken for a problem of the real batch.
+  async function cooldownWait(expected, list, ignoreText, maxMs) {
+    const began = Date.now();
+    while (Date.now() - began < maxMs) {
+      const txt = await ui.locator(cfg.selectors.status).innerText().catch(() => "");
+      const stale = ignoreText && txt === ignoreText && Date.now() - began < 60000;
+      if (!stale) {
+        const body = Date.now() - began > 20000 ? await ui.locator("body").innerText().catch(() => "") : "";
+        const rows = body ? parseQueue(body, list) : [];
+        const c = isQueueComplete({ doneMsg: parseDoneMessage(txt), rows, expected });
+        if (c.complete) return { finished: true, blocked: false };
+      }
+      const ftxt = await flow.locator("body").innerText().catch(() => "");
+      if (BLOCK_RE.test(ftxt)) return { finished: false, blocked: true };
+      await flow.waitForTimeout(8000);
+    }
+    return { finished: false, blocked: false };
+  }
+
+  // Cooldown pass (last step, after every real image is safe): Flow is switched to a RANDOM ratio and model (different from the wanted
+  // ratio) and 1..COOL_MAX throwaway images are made. They are never kept: while COOLING the download hook deletes every download, the
+  // media tracker is detached, and nothing goes into the manifest. Flow stays on the random setting, so the NEXT run has to switch it
+  // back to the wanted one, like a person would. Screenshots go to debug/cooldown. Never throws, never changes the batch status.
+  async function cooldownPass() {
+    const out = { enabled: COOL_MAX > 0, ran: false, picked: null, chip: null, model_differs: null, prompts: 0, finished: false, blocked: false, discarded: 0, skipped: null, error: null, attempts: [] };
+    if (!COOL_MAX) { out.skipped = "off"; return out; }
+    if (blocked) { out.skipped = "Flow blocked"; return out; }
+    if (!done) { out.skipped = "queue not finished"; return out; }
+    if (!(process.env.FLOW_MAX_WAIT_MIN || "").trim() && Date.now() - SCRIPT_START + 8 * 60000 > STEP_LIMIT_MS) { out.skipped = "not enough step time left"; return out; }
+    const cdir = path.join(DEBUG_DIR, "cooldown");
+    try {
+      fs.mkdirSync(cdir, { recursive: true });
+      try { context.off("response", TRACKER.onResponse); } catch (e) {}
+      mark('cooldown_start');
+      await flow.bringToFront().catch(() => {});
+      const tried = [];
+      let applied = null;
+      for (let a = 1; a <= 3 && !applied; a++) {
+        const pick = chooseCooldown({ wantAspect: ASP.label, wantModel: WANT.model, models: COOL_MODELS, aspects: COOL_ASPECTS, tried });
+        if (!pick) break;
+        tried.push(pick);
+        const res = await applyFlowSettings(flow, { agent: "off", model: pick.model, aspect: pick.aspect, count: 1 }, cdir);
+        out.attempts.push({ aspect: pick.aspect, model: pick.model, verdict: res.verdict, chip: res.chipAfter || null });
+        console.log("Cooldown settings try " + a + ": " + pick.model + " / " + pick.aspect + " -> " + res.verdict + " (" + (res.chipAfter || "chip unreadable") + ")");
+        if (res.verdict === "ok") { applied = res; out.picked = pick; out.chip = res.chipAfter; out.model_differs = !looseModelRe(WANT.model).test(res.chipAfter || ""); }
+      }
+      await flow.screenshot({ path: path.join(cdir, "random-settings.png") }).catch(() => {});
+      if (!applied) { out.skipped = "random settings could not be verified, nothing generated"; console.log("Cooldown: " + out.skipped); return out; }
+      await openUi();
+      const n = 1 + Math.floor(Math.random() * COOL_MAX);
+      const list = pickCooldownPrompts(n);
+      out.prompts = list.length;
+      const before = await ui.locator(cfg.selectors.status).innerText().catch(() => "");
+      COOLING = true;
+      await submit(list);
+      await ui.locator(cfg.selectors.startButton).click();
+      out.ran = true;
+      await flow.bringToFront().catch(() => {});
+      mark('cooldown_start_clicked');
+      console.log("Cooldown: " + list.length + " throwaway image(s) started on " + out.chip);
+      await flow.waitForTimeout(8000);
+      await ui.screenshot({ path: path.join(cdir, "ui-started.png") }).catch(() => {});
+      const w = await cooldownWait(list.length, list, before, COOL_WAIT_MS);
+      out.finished = w.finished;
+      out.blocked = w.blocked;
+      await flow.screenshot({ path: path.join(cdir, "images-end.png") }).catch(() => {});
+      await ui.screenshot({ path: path.join(cdir, "ui-end.png") }).catch(() => {});
+      await dumpUiText(ui, "cooldown/ui-end-text.txt").catch(() => {});
+      // Let the auto-download arrive while COOLING is still on, so it is deleted and never reaches the download folders.
+      await flow.waitForTimeout(12000);
+      out.discarded = DL_NAMES.filter((r) => r.cooldown).length;
+      mark('cooldown_end_' + (w.finished ? 'finished' : w.blocked ? 'blocked' : 'timeout'));
+      console.log("Cooldown done: finished=" + w.finished + " blocked=" + w.blocked + " downloads discarded=" + out.discarded);
+    } catch (e) {
+      out.error = String(e && e.message).slice(0, 200);
+      console.log("::warning::Cooldown pass failed (the batch result is not affected): " + out.error);
+      mark('cooldown_error');
+    } finally {
+      COOLING = false;
+      try { fs.writeFileSync(path.join(cdir, "cooldown.json"), JSON.stringify(out, null, 2)); } catch (e) {}
+    }
+    return out;
   }
 
   // ---- Pass 1 (optional): thumbnail in its own settings, same session ----
@@ -881,6 +985,10 @@ async function dumpUiText(ui, name) {
 
   if (blocked) mark('blocked_unusual_activity');
   if (retried) await flow.waitForTimeout(cfg.settleSeconds * 1000);
+
+  // ---- Cooldown: random settings + 1-2 throwaway images, nothing kept (runs only when the whole batch finished and Flow is not blocking) ----
+  const cool = await cooldownPass();
+
   try { if (/\/project\//.test(flow.url())) saveCookies(await context.cookies()); } catch (e) {}
   await pullSwLog();
   await context.close();
@@ -910,7 +1018,8 @@ async function dumpUiText(ui, name) {
     expected_images: expectedImages, images_accepted: img.accepted, images_wrong_ratio: img.rejected,
     over_generated: over.over, extra_images: over.extra,
     mapping_available: img.mapped, missing_scenes: img.missingScenes,
-    thumbnail: THUMB_FILE ? { requested: true, ratio: THUMB_ASP.label, ran: thumb.ran, saved: thumb.saved, settings_verdict: EVID.flow.thumbSettings ? EVID.flow.thumbSettings.verdict : null } : { requested: false }
+    thumbnail: THUMB_FILE ? { requested: true, ratio: THUMB_ASP.label, ran: thumb.ran, saved: thumb.saved, settings_verdict: EVID.flow.thumbSettings ? EVID.flow.thumbSettings.verdict : null } : { requested: false },
+    cooldown: cool
   };
   writeEvidence();
   fs.writeFileSync(path.join(FINAL_DIR, "manifest.json"), JSON.stringify({ generated_at: new Date().toISOString(), batch_status: verdict.status, status_reasons: verdict.reasons, summary: EVID.summary, prompts: EVID.results, scenes: img.scenes, missing_scenes: img.missingScenes, images: img.items, note: "scene_NN.* = image for prompt NN, matched by Flow media UUID, by the [sNN] tag in the file name, or (last resort) by download order. unmatched_* = accepted images that map to no scene. Scenes listed in missing_scenes need the Cloudflare fallback. When mapping_available is false, images keep Flow's names and scene order is unknown." }, null, 2));
@@ -921,12 +1030,15 @@ async function dumpUiText(ui, name) {
 
   if (process.env.GITHUB_STEP_SUMMARY) {
     const s = EVID.summary;
+    const cd = s.cooldown;
+    const cdText = !cd.enabled ? "off" : cd.skipped ? "skipped (" + cd.skipped + ")" : (cd.ran ? cd.prompts + " throwaway image(s) on " + cd.chip + ", finished: " + cd.finished + ", discarded: " + cd.discarded : "not run") + (cd.error ? " | error: " + cd.error : "");
     const md = ["### Flow batch result: " + s.batch_status, "", verdict.reasons.length ? "Reasons: " + verdict.reasons.join("; ") : "All prompts completed and verified.", "", "| Item | Value |", "|---|---|",
       "| Prompts | " + s.prompts + " |", "| Wanted | " + s.wanted.model + ", " + s.wanted.ratio + ", x" + s.wanted.per_prompt + " |",
       "| Settings verified | " + s.settings_verified + " (" + s.settings_verdict + ") |", "| Generation completed / failed / unfinished | " + s.generation_completed + " / " + s.generation_failed + " / " + s.generation_unfinished + " |",
       "| Images kept (right ratio) | " + s.images_accepted + " of " + s.expected_images + " expected |", "| Images rejected (wrong ratio) | " + s.images_wrong_ratio + " (in downloads/rejected) |",
       "| Extra images beyond request | " + s.extra_images + " |", "| Scene mapping | " + (s.mapping_available ? "UUID/tag/order match, missing scenes: " + (s.missing_scenes.join(",") || "none") : "NOT available") + " |",
-      "| Thumbnail | " + (s.thumbnail.requested ? (s.thumbnail.saved ? "saved (" + s.thumbnail.ratio + ")" : "none (ran: " + s.thumbnail.ran + ")") : "not requested") + " |", ""].join(NL);
+      "| Thumbnail | " + (s.thumbnail.requested ? (s.thumbnail.saved ? "saved (" + s.thumbnail.ratio + ")" : "none (ran: " + s.thumbnail.ran + ")") : "not requested") + " |",
+      "| Cooldown | " + cdText + " |", ""].join(NL);
     try { fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, md + NL); } catch (e) {}
   }
   if (blocked) {

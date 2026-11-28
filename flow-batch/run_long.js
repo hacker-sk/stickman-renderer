@@ -17,6 +17,9 @@
 // so a blocked session ends at once and keeps the images it made. LONG_BLOCK_SESSIONS=0 = the old behaviour (in-session retries, stop).
 // The cursor position is kept between these sessions (FLOW_CURSOR_FILE, see human.js), so each new session starts the mouse where the
 // last one left it.
+// A block can also show up EARLY: the very first (warm-up) image hits the notice, run_flow.js then never gets its Start button enabled and
+// ends with "Start button stayed disabled" without writing blocked-final.flag. That case is now recognised too (debug/cooldown/cooldown.json
+// says blocked, or the Start-button error appeared, and the session made no image) and handled exactly like a block: wait, fresh session.
 // Stops when Flow is STILL blocked after all fresh sessions, on an auth/settings error, when a normal round makes no progress,
 // or when the time budget is used up.
 // `--check` only lists what is missing. Exit code 0 = every image exists, 1 = some are missing.
@@ -34,10 +37,12 @@ const ROUNDS = Math.max(1, parseInt(process.env.LONG_ROUNDS || "3", 10) || 3);
 const BUDGET_MS = (parseFloat(process.env.LONG_BUDGET_MIN || "140") || 140) * 60000;
 const FATAL_RE = /AUTH FAILED|SETTINGS MISMATCH|SETTINGS UNVERIFIED|secret is missing|Invalid model|Unknown aspect/i;
 // Fresh-session block retries (see the header). Waits (seconds) before fresh session 1..5; the last value repeats if more are asked for.
+// Default waits are longer than before (2, 5, 10, 15, 20 min): two fresh sessions started only 3 minutes apart were both blocked again at
+// their first image. Override with LONG_BLOCK_WAITS_S (comma separated seconds).
 const FRESH_MAX = (() => { const n = parseInt(process.env.LONG_BLOCK_SESSIONS || "5", 10); return Number.isNaN(n) ? 5 : Math.max(0, Math.min(n, 10)); })();
 const FRESH_WAITS_S = (() => {
-  const a = String(process.env.LONG_BLOCK_WAITS_S || "60,180,300,480,600").split(",").map((x) => parseFloat(x)).filter((x) => x >= 0);
-  return a.length ? a : [60, 180, 300, 480, 600];
+  const a = String(process.env.LONG_BLOCK_WAITS_S || "120,300,600,900,1200").split(",").map((x) => parseFloat(x)).filter((x) => x >= 0);
+  return a.length ? a : [120, 300, 600, 900, 1200];
 })();
 const CURSOR_FILE = path.join(os.tmpdir(), "flow_cursor_" + process.pid + ".json"); // one cursor memory for all sessions of this run
 const started = Date.now();
@@ -105,6 +110,12 @@ function runChunk(round, ci, list) {
   if (FATAL_RE.test(err)) { fatal = true; console.log("::error::Flow setup problem, no more sessions: " + err.trim().slice(0, 200)); }
   // Only a block that is still there when the session ends counts (debug/blocked.png also exists when a retry got past the block).
   blocked = fs.existsSync(path.join(ROOT, "debug", "blocked-final.flag"));
+  // The early block: the warm-up image already hit the "unusual activity" notice (debug/cooldown/cooldown.json -> blocked) and/or the
+  // extension's Start button never enabled. run_flow.js then ends with an error and writes NO blocked-final.flag, so it used to look like
+  // "no progress" and the run stopped after a few minutes. Judged after the images are collected (a session that made images is not blocked).
+  let warmBlocked = false;
+  try { warmBlocked = JSON.parse(fs.readFileSync(path.join(ROOT, "debug", "cooldown", "cooldown.json"), "utf8")).blocked === true; } catch (e) {}
+  const startDisabled = /Start button stayed disabled/i.test(err);
 
   // collect: scene_NN in downloads/final = NN-th prompt of THIS session
   const fin = path.join(ROOT, "downloads", "final");
@@ -118,6 +129,10 @@ function runChunk(round, ci, list) {
       fs.copyFileSync(path.join(fin, f), path.join(CACHE, "scene_" + pad(p) + "." + m[2].toLowerCase()));
       got += 1;
     }
+  }
+  if (!blocked && !fatal && got === 0 && (warmBlocked || startDisabled)) {
+    blocked = true;
+    console.log("::warning::Flow is blocking this session (" + (warmBlocked ? "the warm-up image hit the 'unusual activity' notice" : "the Start button never enabled") + ") and no image was made - handled as a block: wait, then a fresh session");
   }
   console.log("session " + ci + " kept " + got + " of " + list.length + " new image(s)" + (blocked ? " | Flow blocked this session" : ""));
   try {

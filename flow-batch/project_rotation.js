@@ -1,19 +1,24 @@
-// Every 4-5 Flow runs a brand-new Flow PROJECT is created (with human mouse moves, like the fresh Library step) and used for the next runs.
-// One counter for ALL workflows that use Flow (flow-batch.yml, long_landscape.yml, shorts.yml): the counter and the link of the current
-// project live in flow-batch/session/project.json, the folder every one of those workflows already restores and saves (cache prefix
-// flow-session-). No workflow file had to change.
+// Flow PROJECT handling. One counter and one project link for ALL workflows that use Flow (flow-batch.yml, long_landscape.yml, shorts.yml):
+// both live in flow-batch/session/project.json, the folder every one of those workflows already restores and saves (cache prefix
+// flow-session-) together with the saved cookies. Flow Login Refresh restores that folder first, so it keeps project.json too.
 //
-// How it works (called from fresh_library.js right after the Flow project loaded and the sidebar is visible):
+// Order of everything (the repository secret/variable are FALLBACKS only, none of them has to exist):
+//   cookies:  saved session (session/cookies.json)  ->  FLOW_COOKIES_B64 secret                      (run_flow.js)
+//   project:  saved project (project.json)          ->  FLOW_PROJECT_URL variable  ->  a NEW project   (this file)
+//   A new project is created automatically when no project opens (no saved project, no variable, or both are dead/deleted) and the
+//   Flow start page shows the "New project" button (= the cookies are valid). Flow's changelog pop-ups ("Get started") are clicked away.
+//
+// Rotation: every 4-5 Flow runs a brand-new Flow PROJECT is created (with human mouse moves, like the fresh Library step) and used for
+// the next runs.
 //   - A run is counted ONCE per GitHub run id (pass 1 / pass 2 / fresh sessions of the same workflow run do not count again).
-//   - state: { base, url, runs, limit, lastRun }. base = the FLOW_PROJECT_URL the state belongs to (a changed variable starts over),
-//     url = the project in use (null = the base project), runs = runs already made in that project (this one included),
-//     limit = 4 or 5, picked at random for every project (FLOW_PROJECT_EVERY="4-5" changes the range, "6" = always 6).
+//   - state: { base, url, runs, limit, lastRun }. url = the saved project in use (null = the FLOW_PROJECT_URL project), runs = runs already
+//     made in that project (this one included), limit = 4 or 5, picked at random for every project (FLOW_PROJECT_EVERY="4-5" changes the
+//     range, "6" = always 6). base is only informational now: changing the variable no longer resets a saved project.
 //   - When runs >= limit at the start of a run: open the Flow start page, click "New project" with human mouse moves, wait for the new
 //     /project/<id> address, save it. If that fails, the old project stays in use and the next run tries again.
-//   - When the project in use is not the one FLOW_URL points to, the browser goes to the project in use first. Later page.goto(FLOW_URL)
-//     calls of run_flow.js (reloads) are redirected to it too, so a reload never drops back into the old project.
+//   - Later page.goto(FLOW_URL) calls of run_flow.js (reloads) are redirected to the project in use.
 //   - Never throws into the run: a failure only prints a warning. FLOW_PROJECT_ROTATION=off switches it off.
-// The new project keeps Flow's default name. Screenshots: debug/new-project-home.png and debug/new-project-created.png.
+// Called from fresh_library.js right after the Flow page loaded. Screenshots: debug/new-project-home.png, debug/new-project-created.png.
 const fs = require("fs");
 const path = require("path");
 
@@ -59,10 +64,19 @@ function writeState(s) {
     fs.writeFileSync(STATE_FILE, JSON.stringify(s));
   } catch (e) { console.log("::warning::Project rotation: state not saved: " + String(e && e.message).slice(0, 100)); }
 }
+// The saved project did not open (deleted or unreachable): forget its link, keep the counters.
+function forgetSaved() {
+  const s = readState();
+  if (s && s.url) { s.url = null; writeState(s); }
+}
 
-// A goto of the base project address goes to the project in use instead.
+// A goto of the FLOW_PROJECT_URL address (or of the Flow start page) goes to the project in use instead.
 function redirect(url) {
-  if (active.url && active.base && pid(url) && pid(url) === pid(active.base)) return active.url;
+  if (!active.url) return url;
+  const u = String(url || "");
+  if (!/labs\.google|flow\.google/.test(u)) return url;
+  // the FLOW_PROJECT_URL address, or the plain Flow start page (no variable set): both go to the project in use
+  if (!pid(u) || (active.base && pid(u) === pid(active.base))) return active.url;
   return url;
 }
 function installRedirect(page) {
@@ -86,6 +100,46 @@ function findNewProject(page) {
     }
     return best;
   });
+}
+
+// Flow's "what's new" pop-ups that cover a freshly loaded project ("A faster, easier-to-reach Flow Agent" -> arrow -> "Smarter search"
+// -> "Get started"; the Get started button stays grey until the last page). They sit on top of the sidebar and the prompt bar, so they
+// are clicked away: Get started when it is usable, else the forward arrow, else Escape. Never throws, at most 8 clicks.
+async function dismissDialogs(page, h) {
+  let n = 0;
+  let lastWasStart = false;
+  await page.waitForTimeout(2500).catch(() => {});
+  for (let i = 0; i < 8; i++) {
+    const t = await page.evaluate((skipStart) => {
+      const vis = (e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+      const leaf = [...document.querySelectorAll("*")].find((e) => !e.children.length && /view all changelogs/i.test(e.textContent || "") && vis(e));
+      if (!leaf) return null;
+      let box = leaf;
+      for (let k = 0; k < 8 && box.parentElement; k++) { box = box.parentElement; if (/get started/i.test(box.textContent || "")) break; }
+      const btns = [...box.querySelectorAll('button,[role="button"]')].filter(vis);
+      const label = (e) => ((e.getAttribute("aria-label") || "") + " " + (e.textContent || "")).replace(/\s+/g, " ").trim();
+      const pt = (e, what) => { const r = e.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2, what }; };
+      const gs = btns.find((e) => /^get started$/i.test(label(e)));
+      if (gs && !skipStart && !gs.disabled && gs.getAttribute("aria-disabled") !== "true") return pt(gs, "get started");
+      const next = btns.find((e) => /forward|next|chevron_right|arrow_right/i.test(label(e)));
+      if (next) return pt(next, "next");
+      if (gs && !gs.disabled) return pt(gs, "get started");
+      const other = btns.find((e) => !/changelog|get started|back|previous|arrow_back|close/i.test(label(e)));
+      if (other) return pt(other, "other");
+      return { esc: true };
+    }, lastWasStart).catch(() => null);
+    if (!t) break;
+    if (t.esc) { await page.keyboard.press("Escape").catch(() => {}); n++; await page.waitForTimeout(900).catch(() => {}); lastWasStart = false; continue; }
+    try {
+      if (h && h.moveTo) await h.moveTo(page, t.x + (h.rand ? h.rand(-2, 2) : 0), t.y + (h.rand ? h.rand(-2, 2) : 0));
+      await page.mouse.click(t.x, t.y);
+    } catch (e) { break; }
+    n++;
+    lastWasStart = t.what === "get started";
+    await page.waitForTimeout(1000).catch(() => {});
+  }
+  if (n) console.log("Flow pop-ups: " + n + " click(s) to close the 'what's new' dialog");
+  return n;
 }
 
 // Creates the project. Returns { ok, url }. On any failure the browser goes back to backUrl and { ok: false } is returned.
@@ -144,20 +198,60 @@ async function sidebarVisible(page, ms) {
   } catch (e) { return false; }
 }
 
+// No working project is open (no sidebar): try the saved project, then the FLOW_PROJECT_URL project, and when neither opens create a
+// NEW project on the Flow start page. Returns true when the browser ends up inside a working project, false when it could not
+// (not signed in, or the "New project" button is missing) - the caller then reports "not ready" like before.
+async function recover(page, h) {
+  if (/accounts\.google\.com|\/about(\/|\?|$)/.test(page.url())) return false; // signed out: cookies were rejected, nothing to create
+  const fr = page.mainFrame();
+  let here = pid(page.url());
+  const st0 = readState();
+  const tries = [];
+  if (st0 && pid(st0.url)) tries.push({ label: "saved project", url: st0.url, saved: true });
+  if (pid(process.env.FLOW_URL)) tries.push({ label: "FLOW_PROJECT_URL project", url: process.env.FLOW_URL, saved: false });
+  for (const t of tries) {
+    if (pid(t.url) === here) { if (t.saved) forgetSaved(); continue; } // already here and it showed no sidebar: not usable
+    try {
+      await fr.goto(t.url, { waitUntil: "domcontentloaded" });
+      await h.pause(7000, 11000);
+    } catch (e) {}
+    if (await sidebarVisible(page, 20000)) {
+      console.log("Project rotation: using the " + t.label + " " + String(pid(t.url)).slice(0, 8));
+      return true;
+    }
+    console.log("::warning::Project rotation: the " + t.label + " did not open");
+    if (t.saved) forgetSaved();
+    here = pid(page.url());
+  }
+  console.log("Project rotation: no working project - creating a new one");
+  const res = await createProject(page, h, homeUrl());
+  if (!res.ok) return false;
+  writeState({ base: process.env.FLOW_URL || homeUrl(), url: res.url, runs: 1, limit: pickLimit(), lastRun: String(process.env.GITHUB_RUN_ID || "local") });
+  console.log("Project rotation: new project " + String(pid(res.url)).slice(0, 8) + " saved (no project was available)");
+  return true;
+}
+
 // Returns false when the Flow sidebar is not there yet (not logged in): the caller tries again after the next page load.
 // Returns true once the step is handled (also when nothing had to be done or when it failed).
 async function maybeRotate(page, h) {
   if (handled || process.env.FLOW_PROJECT_ROTATION === "off") return true;
-  if (!(await sidebarVisible(page, 25000))) { console.log("Project rotation: sidebar not visible yet, skipped for now"); return false; }
+  if (!(await sidebarVisible(page, 25000))) {
+    console.log("Project rotation: sidebar not visible - looking for a working project");
+    let ok = false;
+    try { ok = await recover(page, h); }
+    catch (e) { console.log("::warning::Project rotation: recovery failed: " + String(e && e.message).slice(0, 140)); }
+    if (!ok) { console.log("Project rotation: no project ready yet, skipped for now"); return false; }
+  }
   handled = true;
+  try { await dismissDialogs(page, h); } catch (e) {}
 
   const base = process.env.FLOW_URL || homeUrl();
   const runId = String(process.env.GITHUB_RUN_ID || "local");
   let st = readState();
   let due = false;
-  if (!st || st.base !== base) {
+  if (!st) {
     st = { base, url: null, runs: 1, limit: pickLimit(), lastRun: runId };
-    console.log("Project rotation: no saved counter for this project, starting at run 1 of " + st.limit);
+    console.log("Project rotation: no saved counter, starting at run 1 of " + st.limit);
   } else if (st.lastRun !== runId) {
     st.lastRun = runId;
     if (st.runs >= st.limit) due = true; else st.runs += 1;
@@ -171,6 +265,7 @@ async function maybeRotate(page, h) {
       st.runs = 1;
       st.limit = pickLimit();
       console.log("Project rotation: new project " + String(pid(st.url)).slice(0, 8) + " is in use, the next one after " + st.limit + " runs");
+      try { await dismissDialogs(page, h); } catch (e) {}
     }
   } else {
     const want = st.url || base;
@@ -180,7 +275,7 @@ async function maybeRotate(page, h) {
         await page.mainFrame().goto(want, { waitUntil: "domcontentloaded" });
         await h.pause(7000, 11000);
         if (!(await sidebarVisible(page, 20000)) && st.url) {
-          console.log("::warning::Project rotation: the saved project did not open, back to the base project");
+          console.log("::warning::Project rotation: the saved project did not open, back to the FLOW_PROJECT_URL project");
           st.url = null;
           await page.mainFrame().goto(base, { waitUntil: "domcontentloaded" });
           await h.pause(7000, 11000);
@@ -189,9 +284,10 @@ async function maybeRotate(page, h) {
         console.log("::warning::Project rotation: could not open the project in use: " + String(e && e.message).slice(0, 120));
       }
     }
-    console.log("Project rotation: run " + st.runs + " of " + st.limit + " in project " + String(pid(st.url || base)).slice(0, 8));
+    console.log("Project rotation: run " + st.runs + " of " + st.limit + " in project " + String(pid(st.url || page.url() || base)).slice(0, 8));
   }
 
+  st.base = base;
   writeState(st);
   active.base = base;
   active.url = st.url || null;
@@ -199,4 +295,4 @@ async function maybeRotate(page, h) {
   return true;
 }
 
-module.exports = { maybeRotate };
+module.exports = { maybeRotate, dismissDialogs };

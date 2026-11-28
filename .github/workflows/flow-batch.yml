@@ -92,6 +92,8 @@ jobs:
           FLOW_ASPECT: ${{ inputs.aspect }}
           FLOW_COUNT: ${{ inputs.count }}
           FLOW_MODEL: ${{ inputs.model }}
+          # Time budget of the script for the up-to-5 unusual-activity retries (the job cap is 180 minutes).
+          FLOW_STEP_LIMIT_MIN: "120"
         run: xvfb-run -a --server-args="-screen 0 1440x900x24" node run_flow.js
       - name: Save refreshed Flow session
         if: always() && hashFiles('flow-batch/session/cookies.json') != ''

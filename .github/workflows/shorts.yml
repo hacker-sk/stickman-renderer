@@ -24,8 +24,8 @@ name: Hindi Shorts
 #            and the normal providers (IMAGE_PROVIDER_ORDER, Cloudflare first ...) make every image that is missing.
 #            The log line "VOICE CASE:" says which case happened.
 # If prepare fails, Flow is skipped and the normal providers make all images.
-# Switch Flow off with the repository variable FLOW_ENABLED = "false". Optional variable FLOW_MODEL (default Nano Banana Lite).
-# Flow image shape: square by default. Set the repository variable FLOW_ASPECT to portrait (or landscape, 3:4, 4:3) to change it.
+# Switch Flow off with the repository variable FLOW_ENABLED = "false". Optional variable FLOW_MODEL (default Nano Banana 2.1).
+# Flow image shape: 3:4 by default. Set the repository variable FLOW_ASPECT to square (or portrait, landscape, 4:3) to change it.
 # Needs the same FLOW_COOKIES_B64 secret and FLOW_PROJECT_URL variable as flow-batch.yml; without them Flow is skipped.
 # Python packages: prepare and make install the SAME pinned versions (constraints.txt, CPU torch 2.8.0) on Ubuntu 24.04.
 
@@ -249,9 +249,9 @@ jobs:
           FLOW_COOKIES_B64: ${{ secrets.FLOW_COOKIES_B64 }}
           FLOW_URL: ${{ vars.FLOW_PROJECT_URL }}
           PROMPTS_FILE: prompts/shorts_flow.json
-          FLOW_ASPECT: ${{ vars.FLOW_ASPECT || 'square' }}
+          FLOW_ASPECT: ${{ vars.FLOW_ASPECT || '3:4' }}
           FLOW_COUNT: "1"
-          FLOW_MODEL: ${{ vars.FLOW_MODEL || 'Nano Banana Lite' }}
+          FLOW_MODEL: ${{ vars.FLOW_MODEL || 'Nano Banana 2.1' }}
         run: |
           # The scenes wait is at most 10 minutes (hard cap in run_flow.js) and stops at once on Flow's "unusual activity" error;
           # run_flow.js then backs off and retries the missing scenes at most 2 times (time permitting), then the images are collected.

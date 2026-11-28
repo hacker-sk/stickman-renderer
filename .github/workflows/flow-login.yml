@@ -1,0 +1,56 @@
+name: Flow Login Refresh
+on:
+  workflow_dispatch:
+# Same group as flow-batch so a login never runs at the same time as a batch (both write the session cache).
+concurrency:
+  group: flow-batch
+  cancel-in-progress: false
+jobs:
+  login:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check configuration
+        env:
+          EMAIL: ${{ secrets.FLOW_GOOGLE_EMAIL }}
+          PASSWORD: ${{ secrets.FLOW_GOOGLE_PASSWORD }}
+          TOTP: ${{ secrets.FLOW_GOOGLE_TOTP_SECRET }}
+        run: |
+          miss=""
+          [ -z "$EMAIL" ] && miss="$miss FLOW_GOOGLE_EMAIL"
+          [ -z "$PASSWORD" ] && miss="$miss FLOW_GOOGLE_PASSWORD"
+          if [ -n "$miss" ]; then echo "::error::Missing repository secrets:$miss"; exit 1; fi
+          [ -z "$TOTP" ] && echo "::notice::FLOW_GOOGLE_TOTP_SECRET not set - fine only if the account has no 2-step verification"
+          echo "Configuration present"
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install dependencies
+        working-directory: flow-batch
+        run: |
+          npm install
+          npx playwright install --with-deps chromium
+          sudo apt-get install -y xvfb
+      - name: Log in and save session
+        working-directory: flow-batch
+        env:
+          FLOW_GOOGLE_EMAIL: ${{ secrets.FLOW_GOOGLE_EMAIL }}
+          FLOW_GOOGLE_PASSWORD: ${{ secrets.FLOW_GOOGLE_PASSWORD }}
+          FLOW_GOOGLE_TOTP_SECRET: ${{ secrets.FLOW_GOOGLE_TOTP_SECRET }}
+          FLOW_URL: ${{ vars.FLOW_PROJECT_URL }}
+        run: xvfb-run -a --server-args="-screen 0 1440x900x24" node login_flow.js
+      - name: Save new Flow session
+        if: success() && hashFiles('flow-batch/session/cookies.json') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: flow-batch/session
+          key: flow-session-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Upload login screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: flow-login-debug
+          path: flow-batch/debug-login
+          retention-days: 3
+          if-no-files-found: ignore

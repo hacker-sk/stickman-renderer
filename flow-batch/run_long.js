@@ -7,7 +7,10 @@
 //  - a failed or cancelled run leaves everything it made in the cache and the next run continues with the missing ones only.
 // run_flow.js caps its wait at 10 minutes, far too short for 200 images, so a patched COPY (run_flow_long.js) is used whose wait is
 // FLOW_MAX_WAIT_MIN = the time left in LONG_BUDGET_MIN. run_flow.js itself is not touched.
-// Stops on "unusual activity" (blocked), on an auth/settings error, when a round makes no progress, or when the time budget is used up.
+// "Unusual activity": inside a session run_flow.js backs off and retries up to 5 times (growing waits, same browser session). Those retries
+// need time too, so the session gets FLOW_STEP_LIMIT_MIN = wait + 12 minutes as its overall time budget (the process is killed 8 minutes later).
+// Stops when Flow is STILL blocked after all retries (debug/blocked-final.flag), on an auth/settings error, when a round makes no progress,
+// or when the time budget is used up.
 // `--check` only lists what is missing. Exit code 0 = every image exists, 1 = some are missing.
 const fs = require("fs");
 const os = require("os");
@@ -66,18 +69,19 @@ function runChunk(round, ci, list) {
   rm(path.join(os.homedir(), "Downloads"));
   fs.writeFileSync(path.join(ROOT, CHUNK_FILE), JSON.stringify(list.map((p) => all[p - 1])));
   const waitMin = Math.max(10, Math.floor((BUDGET_MS - (Date.now() - started)) / 60000));
-  console.log("== round " + round + " session " + ci + ": " + list.length + " prompt(s), wait up to " + waitMin + " min");
+  console.log("== round " + round + " session " + ci + ": " + list.length + " prompt(s), wait up to " + waitMin + " min (block retries inside the session: up to 5)");
   const r = cp.spawnSync("node", [FLOW_SCRIPT], {
     cwd: ROOT, timeout: (waitMin + 20) * 60000, killSignal: "SIGKILL", encoding: "utf8", maxBuffer: 1 << 28,
     stdio: ["ignore", "inherit", "pipe"],
-    env: Object.assign({}, process.env, { PROMPTS_FILE: CHUNK_FILE, FLOW_COUNT: "1", FLOW_MAX_WAIT_MIN: String(waitMin) })
+    env: Object.assign({}, process.env, { PROMPTS_FILE: CHUNK_FILE, FLOW_COUNT: "1", FLOW_MAX_WAIT_MIN: String(waitMin), FLOW_STEP_LIMIT_MIN: String(waitMin + 12) })
   });
   const err = String(r.stderr || "");
   if (err) process.stderr.write(err.slice(-4000));
   if (r.error) console.log("session run error:", String(r.error.message).slice(0, 160));
   try { cp.spawnSync("pkill", ["-f", "chrom"]); } catch (e) {}
   if (FATAL_RE.test(err)) { fatal = true; console.log("::error::Flow setup problem, no more sessions: " + err.trim().slice(0, 200)); }
-  if (fs.existsSync(path.join(ROOT, "debug", "blocked.png"))) blocked = true;
+  // Only a block that is still there after every retry stops the rounds (debug/blocked.png also exists when a retry got past the block).
+  if (fs.existsSync(path.join(ROOT, "debug", "blocked-final.flag"))) blocked = true;
 
   // collect: scene_NN in downloads/final = NN-th prompt of THIS session
   const fin = path.join(ROOT, "downloads", "final");
@@ -114,4 +118,4 @@ for (let round = 1; round <= ROUNDS && !blocked && !fatal && !outOfTime; round++
   }
   if (N - missing().length === before) { console.log("no progress in round " + round + ", stopping"); break; }
 }
-finish(blocked ? "Flow blocked (unusual activity)" : fatal ? "Flow setup problem" : outOfTime ? "time budget used up" : "");
+finish(blocked ? "Flow blocked (unusual activity), still blocked after the retries" : fatal ? "Flow setup problem" : outOfTime ? "time budget used up" : "");

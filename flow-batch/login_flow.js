@@ -1,6 +1,9 @@
 // Logs in to Google with credentials from repo secrets and saves fresh Flow session cookies
 // to session/cookies.json (same format run_flow.js reads). Never logs or uploads cookie values.
 // Supports the "tap Yes on your phone" prompt: it waits for you to approve it on your phone.
+// After approval it clicks through Google's optional extra screens (recovery info, passkey offer,
+// terms, etc.) by pressing Skip / Not now / Cancel / Accept, scrolling to the button and ticking
+// any "I agree" checkbox first when needed.
 const { chromium } = require("playwright");
 const fs = require("fs");
 const path = require("path");
@@ -42,6 +45,14 @@ function totp(secret) {
 
 const log = (m) => console.log(new Date().toISOString().slice(11, 19) + " " + m);
 
+// Buttons that skip or accept Google's optional screens, in order of preference
+// (skip-type buttons first, accept-type next, Cancel last).
+const ACTIONS = [
+  "skip", "skip for now", "not now", "no thanks", "no, thanks", "maybe later", "remind me later", "ask me later",
+  "i understand", "i agree", "agree", "accept", "accept all", "got it", "continue", "done", "cancel",
+];
+const TERMS_RE = /terms|agree|accept|consent|privacy policy/i;
+
 (async () => {
   if (!EMAIL || !PASSWORD) {
     console.error("FLOW_GOOGLE_EMAIL / FLOW_GOOGLE_PASSWORD secrets are missing");
@@ -59,6 +70,7 @@ const log = (m) => console.log(new Date().toISOString().slice(11, 19) + " " + m)
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, locale: "en-US" });
   const page = await context.newPage();
   const shot = (name) => page.screenshot({ path: path.join(DEBUG_DIR, name + ".png") }).catch(() => {});
+  const pathOf = () => { try { return new URL(page.url()).pathname; } catch (_) { return "?"; } };
   const clickText = async (re) => {
     const el = page.getByText(re).first();
     if (await el.isVisible().catch(() => false)) {
@@ -77,6 +89,73 @@ const log = (m) => console.log(new Date().toISOString().slice(11, 19) + " " + m)
     }
   };
 
+  // Names of the visible buttons/links on the page (labels only) - used to diagnose a stuck page.
+  const visibleButtons = async () =>
+    page
+      .locator('button, [role="button"], input[type="submit"], a')
+      .evaluateAll((els) =>
+        els
+          .filter((e) => { const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0; })
+          .map((e) => (e.innerText || e.value || e.getAttribute("aria-label") || "").trim().replace(/\s+/g, " "))
+          .filter(Boolean)
+          .slice(0, 20)
+      )
+      .catch(() => []);
+
+  // Ticks any unticked checkbox (scrolls to it first). Used for "I agree to the terms" screens.
+  const tickBoxes = async () => {
+    let ticked = 0;
+    const boxes = page.locator('input[type="checkbox"], [role="checkbox"]');
+    const n = await boxes.count().catch(() => 0);
+    for (let i = 0; i < n; i++) {
+      const b = boxes.nth(i);
+      const checked = await b.isChecked().catch(() => null);
+      if (checked !== false) continue;
+      await b.scrollIntoViewIfNeeded({ timeout: 2000 }).catch(() => {});
+      await b.check({ timeout: 3000, force: true }).catch(() => {});
+      if ((await b.isChecked().catch(() => true)) === false) await b.evaluate((el) => el.click()).catch(() => {});
+      if ((await b.isChecked().catch(() => false)) === true) ticked++;
+    }
+    return ticked;
+  };
+
+  // Clicks the first matching skip/accept button, scrolling it into view first. Returns its label or "".
+  const clickAction = async (labels) => {
+    for (const label of labels) {
+      const re = new RegExp("^\\s*" + label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\s*$", "i");
+      const cands = [page.getByRole("button", { name: re }), page.getByRole("link", { name: re }), page.getByText(re)];
+      for (const c of cands) {
+        const el = c.first();
+        if (!(await el.count().catch(() => 0))) continue;
+        await el.scrollIntoViewIfNeeded({ timeout: 2000 }).catch(() => {});
+        if (!(await el.isVisible().catch(() => false))) continue;
+        try {
+          await el.click({ timeout: 5000 });
+        } catch (_) {
+          await el.click({ timeout: 3000, force: true }).catch(() => {});
+        }
+        return label;
+      }
+    }
+    return "";
+  };
+
+  // Handles one extra Google screen: ticks "agree" boxes, then clicks Skip / Not now / Accept / Cancel.
+  // termsOnly = only act when the page talks about terms/agreeing (used on the Flow page itself).
+  const handleExtraScreen = async (termsOnly) => {
+    const text = await page.locator("body").innerText().catch(() => "");
+    if (termsOnly && !TERMS_RE.test(text)) return "";
+    let did = "";
+    if (TERMS_RE.test(text)) {
+      const t = await tickBoxes();
+      if (t) did += "ticked " + t + " checkbox(es), ";
+    }
+    const labels = termsOnly ? ACTIONS.filter((l) => l !== "cancel" && l !== "done") : ACTIONS;
+    const clicked = await clickAction(labels);
+    if (clicked) return did + "clicked '" + clicked + "'";
+    return did ? did.replace(/, $/, "") : "";
+  };
+
   let exitCode = 0;
   try {
     log("Opening Google sign-in");
@@ -93,6 +172,7 @@ const log = (m) => console.log(new Date().toISOString().slice(11, 19) + " " + m)
     log("Email submitted");
 
     let pwDone = false, totpTries = 0, lastTotpAt = 0, altTried = 0, phoneNoted = false;
+    let lastPath = "", pathSince = Date.now(), actsOnPath = 0, shotsTaken = 0;
     const deadline = Date.now() + WAIT_SEC * 1000;
     while (Date.now() < deadline) {
       await page.waitForTimeout(1500);
@@ -100,6 +180,14 @@ const log = (m) => console.log(new Date().toISOString().slice(11, 19) + " " + m)
       if (!/accounts\.google\.com/.test(url)) break;
       const rawBody = await page.locator("body").innerText().catch(() => "");
       const body = rawBody.toLowerCase();
+
+      const curPath = pathOf();
+      if (curPath !== lastPath) {
+        lastPath = curPath;
+        pathSince = Date.now();
+        actsOnPath = 0;
+        log("Google page: " + curPath);
+      }
 
       if (/wrong password|couldn.t find your google account|couldn.t sign you in|this browser or app may not be secure/.test(body)) {
         throw new Error("Google refused the sign-in (wrong credentials, or the automated browser was blocked)");
@@ -150,29 +238,58 @@ const log = (m) => console.log(new Date().toISOString().slice(11, 19) + " " + m)
           if (nums.length) log("Number shown on screen: " + nums.join(", ") + " (tap this number on your phone if it asks)");
           await shot("phone-prompt");
         }
+        pathSince = Date.now();
         continue;
       }
 
-      if (/passkeyenrollment|speedbump|signin\/v2\/(challenge\/)?(recovery|selection)?/.test(url) || /not now|skip|no thanks|i understand/.test(body)) {
-        const btn = page.getByRole("button", { name: /not now|skip|no thanks|i understand|confirm|continue/i }).first();
-        if (await btn.isVisible().catch(() => false)) {
-          await btn.click({ timeout: 5000 }).catch(() => {});
-          log("Dismissed an extra Google prompt");
+      // Anything else on accounts.google.com after the password is an extra screen
+      // (recovery info, passkey offer, terms, ...): skip / accept it.
+      if (pwDone) {
+        if (phoneNoted) {
+          log("Approved - continuing through Google's extra screens");
+          phoneNoted = false;
         }
-      }
-
-      if (pwDone && /confirm your recovery|enter a phone number|verify your recovery/.test(body) && !TOTP_SECRET) {
-        throw new Error("Google wants a recovery email/phone check that this job cannot complete");
+        const did = await handleExtraScreen(false);
+        if (did) {
+          actsOnPath++;
+          log("Extra screen " + curPath + ": " + did);
+          if (shotsTaken < 6) await shot("extra-" + ++shotsTaken);
+          if (actsOnPath > 8) {
+            throw new Error("Clicked through " + curPath + " 8 times but Google keeps showing it. Buttons: " + (await visibleButtons()).join(" | "));
+          }
+        } else {
+          // Nothing clickable in view: scroll down in case the button is below the fold.
+          await page.mouse.wheel(0, 700).catch(() => {});
+          await page.keyboard.press("End").catch(() => {});
+          if (Date.now() - pathSince > 40000) {
+            await shot("stuck");
+            throw new Error("Stuck on Google page " + curPath + " with no Skip/Accept button found. Buttons: " + (await visibleButtons()).join(" | "));
+          }
+        }
       }
     }
     if (/accounts\.google\.com/.test(page.url())) {
-      throw new Error("Still on Google sign-in after timeout - phone not approved in time? (path: " + new URL(page.url()).pathname + ")");
+      throw new Error("Still on Google sign-in after timeout - phone not approved in time? (path: " + pathOf() + ")");
     }
 
     log("Signed in, opening Flow");
     await page.goto(FLOW_URL, { waitUntil: "domcontentloaded" });
-    await page.waitForTimeout(8000);
-    if (/accounts\.google\.com/.test(page.url())) throw new Error("Flow redirected back to sign-in");
+    await page.waitForTimeout(6000);
+    // Flow may show its own terms/welcome dialog (tick the box, press Accept/Continue).
+    for (let i = 0; i < 6; i++) {
+      if (/accounts\.google\.com/.test(page.url())) {
+        const did = await handleExtraScreen(false);
+        if (!did) break;
+        log("Extra screen " + pathOf() + ": " + did);
+        await page.waitForTimeout(3000);
+        continue;
+      }
+      const did = await handleExtraScreen(true);
+      if (!did) break;
+      log("Flow dialog: " + did);
+      await page.waitForTimeout(3000);
+    }
+    if (/accounts\.google\.com/.test(page.url())) throw new Error("Flow redirected back to sign-in (path: " + pathOf() + ")");
 
     const all = await context.cookies();
     const google = all.filter((c) => /google\./.test(c.domain || ""));
@@ -183,7 +300,7 @@ const log = (m) => console.log(new Date().toISOString().slice(11, 19) + " " + m)
     log("Saved " + google.length + " Google cookies to session/cookies.json");
   } catch (e) {
     console.error("LOGIN FAILED: " + e.message);
-    try { console.error("Page at failure: " + new URL(page.url()).pathname); } catch (_) {}
+    console.error("Page at failure: " + pathOf());
     await shot("failure");
     exitCode = 1;
   }

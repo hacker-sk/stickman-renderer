@@ -14,6 +14,7 @@ status: done (run not verified)
 ## Decisions
 - Request: viral-potential reel built from the Instagram analysis (ekminute.tv, 2026-11-28); user asked to create it with shorts.yml
 - Art style: Sketchbook Doodle Stickman; bgm true, mood emotional, random_bg false
+- Rerun 2026-11-28: user asked to rerun the latest Shorts run by repush; same package re-committed to jobs/package.json with an ignored "_rerun" key added so the file changes (commit bb2a386), which starts a new Hindi Shorts run
 
 ## Next step
 None for the package. Optionally check the Actions run and the Buffer post.

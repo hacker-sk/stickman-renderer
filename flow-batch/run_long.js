@@ -7,9 +7,10 @@
 //  - a failed or cancelled run leaves everything it made in the cache and the next run continues with the missing ones only.
 // run_flow.js caps its wait at 10 minutes, far too short for 200 images, so a patched COPY (run_flow_long.js) is used whose wait is
 // FLOW_MAX_WAIT_MIN = the time left in LONG_BUDGET_MIN. run_flow.js itself is not touched.
-// The same copy also gets a second patch: if the extension's prompt box / Start button is not usable for the real batch (this happened
-// after a blocked warm-up, the warm-up queue never finished and the extension page stayed busy), the extension page is closed and opened
-// fresh ONCE and the batch is submitted again, the same thing the block retries of run_flow.js already do.
+// The same copy also gets a second patch: if the extension's prompt box / Start button is not usable for the real batch (seen in the
+// debug files: after a blocked warm-up image Flow shows a "Failed / unusual activity" card, but the ZAPI panel keeps showing the warm-up
+// prompt as GENERATING..., its prompt box and START GENERATION stay greyed out), the panel's STOP button is clicked, the extension page is
+// closed and opened fresh ONCE and the batch is submitted again, the same thing the block retries of run_flow.js already do.
 //
 // "Unusual activity" = Flow blocks the session. Retrying inside the SAME browser (wait, reload, submit again) kept ending with the same
 // block. What worked was the "Flow images, pass 2" workflow step: a brand-new `node run_long.js`, i.e. a new browser with a deleted
@@ -79,7 +80,7 @@ function finish(msg) {
 
 if (process.argv.includes("--check")) finish("check only");
 
-// patched copy of run_flow.js: (a) longer wait (the original caps it at 10 minutes), (b) one reopen of the extension page when the
+// patched copy of run_flow.js: (a) longer wait (the original caps it at 10 minutes), (b) STOP + one reopen of the extension page when the
 // real batch cannot be submitted (prompt box or Start button not usable)
 const FLOW_SCRIPT = "run_flow_long.js";
 {
@@ -88,7 +89,7 @@ const FLOW_SCRIPT = "run_flow_long.js";
   const b = a.replace("setDeadline(cfg.timeoutMinutes)", "setDeadline(+(process.env.FLOW_MAX_WAIT_MIN || cfg.timeoutMinutes))");
   if (a === src || b === a) console.log("::warning::run_flow.js wait cap not patched (text changed?), the wait stays at 10 minutes");
   const oldSubmit = "    await submit(prompts);\n  } catch (e) {\n    await ui.screenshot({ path: path.join(DEBUG_DIR, \"03-disabled.png\") });";
-  const newSubmit = "    try { await submit(prompts); } catch (e0) { console.log(\"Real batch: the extension prompt box / Start button was not usable (\" + String(e0 && e0.message).slice(0, 100) + \") - reopening the extension page once\"); await resetUi(); await submit(prompts); }\n  } catch (e) {\n    await ui.screenshot({ path: path.join(DEBUG_DIR, \"03-disabled.png\") });";
+  const newSubmit = "    try { await submit(prompts); } catch (e0) { console.log(\"Real batch: the extension prompt box / Start button was not usable (\" + String(e0 && e0.message).slice(0, 100) + \") - pressing STOP and reopening the extension page once\"); try { await ui.getByText(/^stop$/i).first().click({ timeout: 3000 }); await ui.waitForTimeout(2000); } catch (e1) {} await resetUi(); await submit(prompts); }\n  } catch (e) {\n    await ui.screenshot({ path: path.join(DEBUG_DIR, \"03-disabled.png\") });";
   const c = b.replace(oldSubmit, newSubmit);
   if (c === b) console.log("::warning::run_flow.js submit retry not patched (text changed?), a blocked extension page is not reopened");
   fs.writeFileSync(path.join(ROOT, FLOW_SCRIPT), c);
@@ -182,4 +183,4 @@ while (!fatal && !outOfTime) {
   // A blocked session that made no image is handled by the fresh-session retries above; only a normal round without progress stops here.
   if (!blocked && !fatal && !outOfTime && N - missing().length === before) { console.log("no progress in round " + passNo + ", stopping"); break; }
 }
-finish(blocked ? "Flow blocked (unusual activity), still blocked after " + freshRuns + " fresh session(s)" : fatal ? "Flow setup problem" : outOfTime ? "time budget used up" : "");
+finish(blocked ? "Flow blocked (unusual activity), still blocked after " + freshRuns + " fresh session(s)" : fatal ? "Flow segment problem" : outOfTime ? "time budget used up" : "");

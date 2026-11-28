@@ -21,6 +21,7 @@ name: Long Landscape Video
 #            into a cache folder as soon as the session hands it over. Missing/failed images are generated again (rounds in the step, then
 #            a second step of up to 60 minutes for what is still missing). Failed or cancelled run: everything made so far stays in the
 #            cache and the next run of the SAME package continues from it.
+#            Model: Nano Banana 2.1 (fixed in both passes). The ZAPI extension page opens in its own full-size tab (EXT_UI_WIDTH=0).
 #   make:    only joins images + voice into output/video.mp4. No image generation, no voice, no music, no transitions, no pan/zoom, no captions.
 #            Uploads to the free temporary host (like Shorts) and keeps a release + artifact copy. output/metadata.json has title + description.
 #   upload:  YouTube Data API v3 only (no Buffer). SEPARATE YouTube account per language: a Hindi video never uses the English credentials
@@ -28,7 +29,7 @@ name: Long Landscape Video
 #              en: secrets YT_CLIENT_ID, YT_CLIENT_SECRET, YT_REFRESH_TOKEN | hi: secrets YT_HI_CLIENT_ID, YT_HI_CLIENT_SECRET, YT_HI_REFRESH_TOKEN
 #              (scope youtube.upload). Variables: YT_UPLOAD=off (no upload), YT_PRIVACY / YT_HI_PRIVACY (private default | unlisted | public),
 #              YT_CATEGORY (22), YT_LANGUAGE (en videos; a Hindi video always uploads as hi), YT_MADE_FOR_KIDS (false), YT_TAGS / YT_HI_TAGS (comma separated).
-# Variables: FLOW_LONG_ASPECT (default landscape), FLOW_LONG_CHUNK (prompts per Flow session, default 0 = all in one), FLOW_MODEL.
+# Variables: FLOW_LONG_ASPECT (default landscape), FLOW_LONG_CHUNK (prompts per Flow session, default 0 = all in one).
 
 on:
   push:
@@ -225,7 +226,8 @@ jobs:
           FLOW_COOKIES_B64: ${{ secrets.FLOW_COOKIES_B64 }}
           FLOW_URL: ${{ vars.FLOW_PROJECT_URL }}
           FLOW_ASPECT: ${{ vars.FLOW_LONG_ASPECT || 'landscape' }}
-          FLOW_MODEL: ${{ vars.FLOW_MODEL || 'Nano Banana Lite' }}
+          FLOW_MODEL: "Nano Banana 2.1"
+          EXT_UI_WIDTH: "0"
           LONG_CHUNK: ${{ vars.FLOW_LONG_CHUNK || '0' }}
           LONG_BUDGET_MIN: "240"
         run: xvfb-run -a --server-args="-screen 0 1440x900x24" node run_long.js
@@ -240,7 +242,8 @@ jobs:
           FLOW_COOKIES_B64: ${{ secrets.FLOW_COOKIES_B64 }}
           FLOW_URL: ${{ vars.FLOW_PROJECT_URL }}
           FLOW_ASPECT: ${{ vars.FLOW_LONG_ASPECT || 'landscape' }}
-          FLOW_MODEL: ${{ vars.FLOW_MODEL || 'Nano Banana Lite' }}
+          FLOW_MODEL: "Nano Banana 2.1"
+          EXT_UI_WIDTH: "0"
           LONG_CHUNK: ${{ vars.FLOW_LONG_CHUNK || '0' }}
           LONG_BUDGET_MIN: "60"
         run: xvfb-run -a --server-args="-screen 0 1440x900x24" node run_long.js

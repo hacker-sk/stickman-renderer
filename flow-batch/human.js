@@ -5,32 +5,63 @@
 //     few pixels and then correct back onto it
 //   - before about 35% of clicks the cursor first goes to a random spot on the page and rests there; about 25% of clicks hover-wiggle
 //     a few pixels on the target before pressing
-//   - the real cursor position is tracked (also after plain clicks), so the next move never starts from a stale spot
+//   - the real cursor position is tracked (also after plain clicks) and REMEMBERED for the whole run: every move, idle drift or click
+//     starts exactly where the previous one ended, also on a new page / tab / browser relaunch inside the same run
+//   - while the Flow page is idle (for example during the long image wait) small random mouse drifts happen every 20 to 60 s
 //   - a one-time "fresh Library" step right after the Flow project loads (see fresh_library.js)
+//   - a one-time browsing-history warm-up in the same browser, before Flow opens (warmHistory below)
 //   - a one-time "Random delay" 10-25 sec setup in the ZAPI extension panel, right after it opens (see ext_delay.js)
-// One line "Human layer summary: ..." is printed when the browser closes (clicks, detours, overshoots, wiggles).
-// Switch off: FLOW_HUMAN=off (everything), FLOW_FRESH_LIBRARY=off (only the library step), FLOW_RANDOM_DELAY=off (only the delay
-// setup). Delay range: FLOW_DELAY_MIN / FLOW_DELAY_MAX (default 10 / 25).
+//   - the ZAPI extension tab gets the narrow side-panel width (400 px) like in a real Chrome (run_flow.js reads EXT_UI_WIDTH)
+// One line "Human layer summary: ..." is printed when the browser closes (clicks, detours, overshoots, wiggles, idle drifts).
+// Switch off: FLOW_HUMAN=off (everything), FLOW_FRESH_LIBRARY=off (only the library step), FLOW_HISTORY=off (only the history
+// warm-up), FLOW_RANDOM_DELAY=off (only the delay setup), FLOW_IDLE=off (only the idle drifts). Delay range: FLOW_DELAY_MIN /
+// FLOW_DELAY_MAX (default 10 / 25).
+// Side panel: EXT_UI_WIDTH unset or "0" -> 400 px here. Another width: EXT_UI_WIDTH=450. Full-size extension tab: EXT_UI_WIDTH=full.
+// Optional: FLOW_CURSOR_FILE=/path/cursor.json also keeps the last cursor position across separate node processes of one run.
 const { chromium } = require("playwright");
+const fs = require("fs");
 
 const rand = (a, b) => a + Math.random() * (b - a);
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const sleepQuiet = (ms) => new Promise((r) => { const t = setTimeout(r, ms); if (t.unref) t.unref(); }); // never keeps the process alive
 const pause = (a, b) => sleep(rand(a, b));
 const isExt = (page) => /^chrome-extension:/.test(page.url());
 const vp = (page) => page.viewportSize() || { width: 1440, height: 900 };
 
-const stats = { clicks: 0, plain: 0, detours: 0, overshoots: 0, wiggles: 0, moves: 0, moveMs: 0 };
+const stats = { clicks: 0, plain: 0, detours: 0, overshoots: 0, wiggles: 0, idle: 0, moves: 0, moveMs: 0 };
 let statsLogged = false;
 function logStats() {
   if (statsLogged) return;
   statsLogged = true;
   console.log("Human layer summary: humanized clicks " + stats.clicks + " | plain clicks (extension page / fixed position) " + stats.plain +
     " | detours " + stats.detours + " | overshoots " + stats.overshoots + " | hover wiggles " + stats.wiggles +
-    " | mouse moves " + stats.moves + " (" + Math.round(stats.moveMs / 1000) + " s of cursor travel)");
+    " | idle drifts " + stats.idle + " | mouse moves " + stats.moves + " (" + Math.round(stats.moveMs / 1000) + " s of cursor travel)");
 }
 
-// One mouse action at a time per page, so two mouse actions can never interleave between a move and its click.
+// ---- Cursor memory: the last known cursor position of the whole run (shared by all pages, kept even when a page closes) ----
+const cursor = { pos: null };
+const CURSOR_FILE = process.env.FLOW_CURSOR_FILE || "";
+if (CURSOR_FILE) {
+  try {
+    const j = JSON.parse(fs.readFileSync(CURSOR_FILE, "utf8"));
+    if (j && isFinite(j.x) && isFinite(j.y)) cursor.pos = { x: j.x, y: j.y };
+  } catch (e) { /* no saved position yet */ }
+}
+function setPos(page, p) {
+  page.__pos = p;
+  cursor.pos = p;
+  if (CURSOR_FILE) { try { fs.writeFileSync(CURSOR_FILE, JSON.stringify(p)); } catch (e) {} }
+}
+// Where the cursor is now: this page's own last position, else the last position anywhere in the run, else null (very first move).
+function getPos(page) {
+  const p = page.__pos || cursor.pos;
+  if (!p) return null;
+  const v = vp(page);
+  return { x: clamp(p.x, 2, v.width - 2), y: clamp(p.y, 2, v.height - 2) };
+}
+
+// One mouse action at a time per page, so an idle drift can never slip in between a move and its click.
 function exclusive(page, fn) {
   const run = (page.__q || Promise.resolve()).then(fn);
   page.__q = run.catch(() => {});
@@ -62,14 +93,14 @@ async function glide(page, a, b, dur, straight) {
 }
 
 // Moves the cursor from where it really is to (x, y). o.size = width of the target (bigger target = faster), o.noOvershoot = false/true.
-// Not exclusive by itself: callers wrap it (moveTo below, humanClick).
+// Not exclusive by itself: callers wrap it (moveTo below, humanClick, idle).
 async function moveRaw(page, x, y, o) {
   o = o || {};
   const v = vp(page);
-  const from = page.__pos || { x: rand(100, 600), y: rand(100, 400) };
+  const from = getPos(page) || { x: rand(100, 600), y: rand(100, 400) };
   const dx = x - from.x, dy = y - from.y;
   const dist = Math.hypot(dx, dy);
-  if (dist < 1.5) { page.__pos = { x, y }; page.__lastAct = Date.now(); return; }
+  if (dist < 1.5) { setPos(page, { x, y }); page.__lastAct = Date.now(); return; }
   const w = Math.max(10, o.size || 40);
   const dur = clamp(rand(0.85, 1.25) * (180 + 150 * Math.log2(1 + dist / w)), 160, 1500);
   const over = !o.noOvershoot && dist > 120 && Math.random() < 0.3;
@@ -84,7 +115,7 @@ async function moveRaw(page, x, y, o) {
   } else {
     await glide(page, from, { x, y }, dur, false);
   }
-  page.__pos = { x, y };
+  setPos(page, { x, y }); // the next move (idle drift, click, other page) starts from here
   page.__lastAct = Date.now();
 }
 
@@ -124,7 +155,37 @@ async function hoverWiggle(page, x, y) {
     await pause(60, 220);
   }
   await page.mouse.move(x, y, { steps: 2 });
+  setPos(page, { x, y });
   stats.wiggles++;
+}
+
+// Small random drift while the page is idle: mostly a short nudge, sometimes a hop to another area.
+// It always starts from the remembered cursor position and the end point is remembered again (moveRaw does that), so the next
+// drift or the next click continues from exactly where this one stopped.
+function idle(page) {
+  return exclusive(page, async () => {
+    const v = vp(page);
+    const from = getPos(page) || { x: rand(200, v.width - 200), y: rand(150, v.height - 200) };
+    const hop = Math.random() < 0.3;
+    const tx = hop ? rand(150, v.width - 150) : clamp(from.x + rand(-180, 180), 40, v.width - 40);
+    const ty = hop ? rand(120, v.height - 150) : clamp(from.y + rand(-120, 120), 40, v.height - 40);
+    await moveRaw(page, tx, ty, { noOvershoot: true, size: 80 });
+    stats.idle++;
+  });
+}
+
+// Runs in the background for each page; only acts on the Flow page, only when nothing else touched the mouse for 8+ s.
+async function idleLoop(page) {
+  if (process.env.FLOW_IDLE === "off") return;
+  try {
+    while (!page.isClosed()) {
+      await sleepQuiet(rand(20000, 60000));
+      if (page.isClosed()) break;
+      if (!/labs\.google|flow\.google/.test(page.url())) continue;
+      if (page.__noIdle > 0 || Date.now() - (page.__lastAct || 0) < 8000) continue;
+      await idle(page).catch(() => {});
+    }
+  } catch (e) { /* page or browser closed */ }
 }
 
 // Move like a person, then let Playwright do the real (actionability-checked) click at the same point.
@@ -141,7 +202,7 @@ async function humanClick(origClick, loc, opts) {
         const r = await origClick.call(loc, opts);
         if (b && b.width > 0 && b.height > 0) {
           const o = opts && opts.position;
-          page.__pos = o ? { x: b.x + o.x, y: b.y + o.y } : { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+          setPos(page, o ? { x: b.x + o.x, y: b.y + o.y } : { x: b.x + b.width / 2, y: b.y + b.height / 2 });
         }
         stats.plain++;
         return r;
@@ -152,7 +213,7 @@ async function humanClick(origClick, loc, opts) {
         const b = await loc.boundingBox();
         if (b && b.width > 0 && b.height > 0) {
           const tx = b.x + b.width * rand(0.3, 0.7), ty = b.y + b.height * rand(0.3, 0.7);
-          const from = page.__pos || { x: rand(100, 600), y: rand(100, 400) };
+          const from = getPos(page) || { x: rand(100, 600), y: rand(100, 400) };
           if (Math.random() < 0.35) {
             const wp = waypoint(page, from, { x: tx, y: ty });
             await moveRaw(page, wp.x, wp.y, { noOvershoot: true, size: 120 });
@@ -188,11 +249,38 @@ function patchProtos(page) {
   }
 }
 
+// One-time browsing-history warm-up in the same browser, before Flow opens: a few ordinary sites with a pause and some mouse
+// movement on each, so the profile is not completely empty. Runs without cookies (the Flow login is added afterwards).
+// Best effort: a site that does not load is skipped, nothing here can stop the run.
+// The cursor position after the last site is remembered, so the Flow page continues from there.
+async function warmHistory(ctx) {
+  if (process.env.FLOW_HISTORY === "off") return;
+  const sites = ["https://www.google.com/", "https://en.wikipedia.org/wiki/Main_Page", "https://www.youtube.com/"];
+  let page = null;
+  try {
+    page = await ctx.newPage();
+    for (const u of sites) {
+      try {
+        await page.goto(u, { waitUntil: "domcontentloaded", timeout: 20000 });
+        await pause(1500, 3500);
+        await wander(page);
+        await pause(800, 2000);
+      } catch (e) { /* skip this site */ }
+    }
+    console.log("Browsing history warm-up done (FLOW_HISTORY=off to skip)");
+  } catch (e) {
+    console.log("::warning::History warm-up skipped: " + String(e && e.message).slice(0, 120));
+  }
+  try { if (page && ctx.pages().length > 1) await page.close(); } catch (e) {}
+}
+
 const lib = { done: false };
 const extDelay = { done: false };
+const warm = { done: false };
 let patched = false;
 function hookPage(page) {
   if (!patched) { patched = true; patchProtos(page); }
+  idleLoop(page);
   const goto = page.goto.bind(page);
   page.goto = async (url, o) => {
     const r = await goto(url, o);
@@ -221,10 +309,19 @@ function hookPage(page) {
   };
 }
 
+// ZAPI extension tab = narrow side panel like a real Chrome (400 px). run_flow.js reads EXT_UI_WIDTH when it opens the tab.
+// The workflows still pass EXT_UI_WIDTH=0 (old "full size" setting), so 0 / unset means 400 here. EXT_UI_WIDTH=full keeps full size.
+function applySidePanelWidth() {
+  const w = String(process.env.EXT_UI_WIDTH == null ? "" : process.env.EXT_UI_WIDTH).trim().toLowerCase();
+  if (w === "" || w === "0") process.env.EXT_UI_WIDTH = "400";
+  console.log("ZAPI side panel width: " + (parseInt(process.env.EXT_UI_WIDTH, 10) > 0 ? process.env.EXT_UI_WIDTH + " px" : "full size"));
+}
+
 let installed = false;
 function install() {
   if (installed || process.env.FLOW_HUMAN === "off") return;
   installed = true;
+  applySidePanelWidth();
   const launch = chromium.launchPersistentContext.bind(chromium);
   chromium.launchPersistentContext = async (...args) => {
     const ctx = await launch(...args);
@@ -232,10 +329,11 @@ function install() {
     ctx.on("page", hookPage);
     const close = ctx.close.bind(ctx);
     ctx.close = async (...a) => { logStats(); return close(...a); };
+    if (!warm.done) { warm.done = true; await warmHistory(ctx); } // once per run, not again after a browser relaunch
     return ctx;
   };
   process.once("exit", logStats);
   console.log("Human input layer on (FLOW_HUMAN=off to disable)");
 }
 
-module.exports = { install, moveTo, type, pause, wander, rand };
+module.exports = { install, moveTo, type, pause, wander, idle, rand };

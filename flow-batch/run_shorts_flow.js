@@ -11,6 +11,9 @@
 //     session ends at once and keeps the images it made.
 //  2. When the session ends blocked (debug/blocked-final.flag) and scenes are still missing: wait (LONG... see below), delete downloads,
 //     debug and profile, and run run_flow.js again with ONLY the missing prompts. Up to SHORTS_BLOCK_SESSIONS fresh sessions (default 5).
+//     An EARLY block counts too (same rule as run_long.js): the warm-up image hit the "unusual activity" notice (debug/cooldown/cooldown.json
+//     says blocked) or the Start button never enabled ("Start button stayed disabled"), and the session made no image. run_flow.js writes NO
+//     blocked-final.flag in that case, so it is recognised here and handled exactly like a block: wait, then a fresh session.
 //  3. Every session's images are kept in shorts_images/scene_NN.<ext> (NN = position of the prompt in the ORIGINAL prompts file). At the
 //     end downloads/final is rebuilt from that folder, so the "flow-images" artifact looks exactly like a single-session run
 //     (scene_NN.<ext> + manifest.json) and the make job needs no change.
@@ -103,6 +106,12 @@ function runSession(sno, list, first) {
   try { cp.spawnSync("pkill", ["-f", "chrom"]); } catch (e) {}
   if (FATAL_RE.test(err)) { fatal = true; console.log("::error::Flow setup problem, no more sessions: " + err.trim().slice(0, 200)); }
   blocked = fs.existsSync(path.join(DEBUG, "blocked-final.flag"));
+  // The early block (same rule as run_long.js): the warm-up image already hit the "unusual activity" notice (debug/cooldown/cooldown.json
+  // -> blocked) and/or the extension's Start button never enabled. run_flow.js then ends with an error and writes NO blocked-final.flag.
+  // Judged after the images are collected (a session that made images is not blocked).
+  let warmBlocked = false;
+  try { warmBlocked = JSON.parse(fs.readFileSync(path.join(DEBUG, "cooldown", "cooldown.json"), "utf8")).blocked === true; } catch (e) {}
+  const startDisabled = /Start button stayed disabled/i.test(err);
 
   // collect: scene_NN in downloads/final = NN-th prompt of THIS session -> original number list[NN-1] (session 1: list is 1..N)
   let got = 0;
@@ -115,6 +124,10 @@ function runSession(sno, list, first) {
       fs.copyFileSync(path.join(FINAL, f), path.join(CACHE, "scene_" + pad(orig) + "." + m[2].toLowerCase()));
       got += 1;
     }
+  }
+  if (!blocked && !fatal && got === 0 && (warmBlocked || startDisabled)) {
+    blocked = true;
+    console.log("::warning::Flow is blocking this session (" + (warmBlocked ? "the warm-up image hit the 'unusual activity' notice" : "the Start button never enabled") + ") and no image was made - handled as a block: wait, then a fresh session");
   }
   console.log("session " + sno + " kept " + got + " of " + list.length + " new image(s)" + (blocked ? " | Flow blocked this session" : ""));
   sessions.push({ session: sno, fresh: !first, prompts: list.length, new_images: got, blocked, exit_status: lastStatus, missing_before: miss0, missing_after: missing().length });

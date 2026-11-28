@@ -3,6 +3,8 @@
 // prompt bar belongs to it and generations are saved inside it (not under "All media"). Returns false when the sidebar is
 // not there yet (not logged in), so the caller can try again after the next page load; true once the step has been handled
 // (even if it could not be confirmed).
+// Before that, project_rotation.js runs from here: every 4-5 runs (all workflows together) a brand-new Flow project is created and used
+// (FLOW_PROJECT_ROTATION=off switches that part off; FLOW_FRESH_LIBRARY=off in human.js skips this whole file, rotation included).
 const fs = require("fs");
 const path = require("path");
 
@@ -10,6 +12,12 @@ const DEBUG_DIR = path.join(__dirname, "debug");
 
 async function ensureFreshLibrary(page, h) {
   fs.mkdirSync(DEBUG_DIR, { recursive: true });
+  // false = the sidebar is not there yet (not logged in): same answer as the Library check below, the caller tries again later.
+  let rotated = true;
+  try { rotated = await require("./project_rotation").maybeRotate(page, h); }
+  catch (e) { console.log("::warning::Project rotation step failed: " + String(e && e.message).slice(0, 160)); }
+  if (rotated === false) return false;
+
   const label = page.getByText("Library", { exact: true }).locator("visible=true").first();
   try { await label.waitFor({ state: "visible", timeout: 25000 }); }
   catch (e) { console.log("Fresh library: sidebar not visible yet, skipped for now"); return false; }

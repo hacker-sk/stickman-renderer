@@ -6,35 +6,31 @@
 //   - before about 35% of clicks the cursor first goes to a random spot on the page and rests there; about 25% of clicks hover-wiggle
 //     a few pixels on the target before pressing
 //   - the real cursor position is tracked (also after plain clicks), so the next move never starts from a stale spot
-//   - while the Flow page is idle (for example during the long image wait) small random mouse drifts happen every 20 to 60 s
 //   - a one-time "fresh Library" step right after the Flow project loads (see fresh_library.js)
-//   - a one-time browsing-history warm-up in the same browser, before Flow opens (warmHistory below)
 //   - a one-time "Random delay" 10-25 sec setup in the ZAPI extension panel, right after it opens (see ext_delay.js)
-// One line "Human layer summary: ..." is printed when the browser closes (clicks, detours, overshoots, wiggles, idle drifts).
-// Switch off: FLOW_HUMAN=off (everything), FLOW_FRESH_LIBRARY=off (only the library step), FLOW_HISTORY=off (only the history
-// warm-up), FLOW_RANDOM_DELAY=off (only the delay setup), FLOW_IDLE=off (only the idle drifts). Delay range: FLOW_DELAY_MIN /
-// FLOW_DELAY_MAX (default 10 / 25).
+// One line "Human layer summary: ..." is printed when the browser closes (clicks, detours, overshoots, wiggles).
+// Switch off: FLOW_HUMAN=off (everything), FLOW_FRESH_LIBRARY=off (only the library step), FLOW_RANDOM_DELAY=off (only the delay
+// setup). Delay range: FLOW_DELAY_MIN / FLOW_DELAY_MAX (default 10 / 25).
 const { chromium } = require("playwright");
 
 const rand = (a, b) => a + Math.random() * (b - a);
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const sleepQuiet = (ms) => new Promise((r) => { const t = setTimeout(r, ms); if (t.unref) t.unref(); }); // never keeps the process alive
 const pause = (a, b) => sleep(rand(a, b));
 const isExt = (page) => /^chrome-extension:/.test(page.url());
 const vp = (page) => page.viewportSize() || { width: 1440, height: 900 };
 
-const stats = { clicks: 0, plain: 0, detours: 0, overshoots: 0, wiggles: 0, idle: 0, moves: 0, moveMs: 0 };
+const stats = { clicks: 0, plain: 0, detours: 0, overshoots: 0, wiggles: 0, moves: 0, moveMs: 0 };
 let statsLogged = false;
 function logStats() {
   if (statsLogged) return;
   statsLogged = true;
   console.log("Human layer summary: humanized clicks " + stats.clicks + " | plain clicks (extension page / fixed position) " + stats.plain +
     " | detours " + stats.detours + " | overshoots " + stats.overshoots + " | hover wiggles " + stats.wiggles +
-    " | idle drifts " + stats.idle + " | mouse moves " + stats.moves + " (" + Math.round(stats.moveMs / 1000) + " s of cursor travel)");
+    " | mouse moves " + stats.moves + " (" + Math.round(stats.moveMs / 1000) + " s of cursor travel)");
 }
 
-// One mouse action at a time per page, so an idle drift can never slip in between a move and its click.
+// One mouse action at a time per page, so two mouse actions can never interleave between a move and its click.
 function exclusive(page, fn) {
   const run = (page.__q || Promise.resolve()).then(fn);
   page.__q = run.catch(() => {});
@@ -66,7 +62,7 @@ async function glide(page, a, b, dur, straight) {
 }
 
 // Moves the cursor from where it really is to (x, y). o.size = width of the target (bigger target = faster), o.noOvershoot = false/true.
-// Not exclusive by itself: callers wrap it (moveTo below, humanClick, idle).
+// Not exclusive by itself: callers wrap it (moveTo below, humanClick).
 async function moveRaw(page, x, y, o) {
   o = o || {};
   const v = vp(page);
@@ -131,33 +127,6 @@ async function hoverWiggle(page, x, y) {
   stats.wiggles++;
 }
 
-// Small random drift while the page is idle: mostly a short nudge, sometimes a hop to another area.
-function idle(page) {
-  return exclusive(page, async () => {
-    const v = vp(page);
-    const from = page.__pos || { x: rand(200, v.width - 200), y: rand(150, v.height - 200) };
-    const hop = Math.random() < 0.3;
-    const tx = hop ? rand(150, v.width - 150) : clamp(from.x + rand(-180, 180), 40, v.width - 40);
-    const ty = hop ? rand(120, v.height - 150) : clamp(from.y + rand(-120, 120), 40, v.height - 40);
-    await moveRaw(page, tx, ty, { noOvershoot: true, size: 80 });
-    stats.idle++;
-  });
-}
-
-// Runs in the background for each page; only acts on the Flow page, only when nothing else touched the mouse for 8+ s.
-async function idleLoop(page) {
-  if (process.env.FLOW_IDLE === "off") return;
-  try {
-    while (!page.isClosed()) {
-      await sleepQuiet(rand(20000, 60000));
-      if (page.isClosed()) break;
-      if (!/labs\.google|flow\.google/.test(page.url())) continue;
-      if (page.__noIdle > 0 || Date.now() - (page.__lastAct || 0) < 8000) continue;
-      await idle(page).catch(() => {});
-    }
-  } catch (e) { /* page or browser closed */ }
-}
-
 // Move like a person, then let Playwright do the real (actionability-checked) click at the same point.
 async function humanClick(origClick, loc, opts) {
   const page = loc.page();
@@ -219,36 +188,11 @@ function patchProtos(page) {
   }
 }
 
-// One-time browsing-history warm-up in the same browser, before Flow opens: a few ordinary sites with a pause and some mouse
-// movement on each, so the profile is not completely empty. Runs without cookies (the Flow login is added afterwards).
-// Best effort: a site that does not load is skipped, nothing here can stop the run.
-async function warmHistory(ctx) {
-  if (process.env.FLOW_HISTORY === "off") return;
-  const sites = ["https://www.google.com/", "https://en.wikipedia.org/wiki/Main_Page", "https://www.youtube.com/"];
-  let page = null;
-  try {
-    page = await ctx.newPage();
-    for (const u of sites) {
-      try {
-        await page.goto(u, { waitUntil: "domcontentloaded", timeout: 20000 });
-        await pause(1500, 3500);
-        await wander(page);
-        await pause(800, 2000);
-      } catch (e) { /* skip this site */ }
-    }
-    console.log("Browsing history warm-up done (FLOW_HISTORY=off to skip)");
-  } catch (e) {
-    console.log("::warning::History warm-up skipped: " + String(e && e.message).slice(0, 120));
-  }
-  try { if (page && ctx.pages().length > 1) await page.close(); } catch (e) {}
-}
-
 const lib = { done: false };
 const extDelay = { done: false };
 let patched = false;
 function hookPage(page) {
   if (!patched) { patched = true; patchProtos(page); }
-  idleLoop(page);
   const goto = page.goto.bind(page);
   page.goto = async (url, o) => {
     const r = await goto(url, o);
@@ -288,11 +232,10 @@ function install() {
     ctx.on("page", hookPage);
     const close = ctx.close.bind(ctx);
     ctx.close = async (...a) => { logStats(); return close(...a); };
-    await warmHistory(ctx);
     return ctx;
   };
   process.once("exit", logStats);
   console.log("Human input layer on (FLOW_HUMAN=off to disable)");
 }
 
-module.exports = { install, moveTo, type, pause, wander, idle, rand };
+module.exports = { install, moveTo, type, pause, wander, rand };
